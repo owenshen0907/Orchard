@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 public enum OrchardAPIError: Error, LocalizedError {
     case invalidURL
@@ -14,7 +17,8 @@ public enum OrchardAPIError: Error, LocalizedError {
     }
 }
 
-public struct OrchardAPIClient: Sendable {
+// FoundationNetworking on Linux does not consistently carry Sendable annotations.
+public struct OrchardAPIClient: @unchecked Sendable {
     public var baseURL: URL
     public var session: URLSession
 

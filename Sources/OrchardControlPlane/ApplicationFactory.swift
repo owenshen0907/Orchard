@@ -44,6 +44,10 @@ private func configureRoutes(
     registry: AgentConnectionRegistry,
     scheduler: TaskScheduler
 ) {
+    app.get { _ in
+        OrchardLandingPage.response()
+    }
+
     app.get("health") { _ in
         ["status": "ok", "service": "orchard-control-plane"]
     }

@@ -7,6 +7,26 @@ import Vapor
 import XCTVapor
 
 final class OrchardControlPlaneTests: XCTestCase {
+    func testRootRouteServesLandingPage() async throws {
+        let dataDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dataDirectory) }
+
+        try await withTestEnvironment(dataDirectory: dataDirectory) {
+            let app = try await makeOrchardControlPlaneApplication(environment: .testing)
+            defer { Task { try? await app.asyncShutdown() } }
+
+            try await app.test(.GET, "/", afterResponse: { res async throws in
+                XCTAssertEqual(res.status, .ok)
+                XCTAssertEqual(res.headers.first(name: .contentType), "text/html; charset=utf-8")
+
+                let body = res.body.getString(at: res.body.readerIndex, length: res.body.readableBytes)
+                XCTAssertNotNil(body)
+                XCTAssertTrue(body?.contains("Orchard Control Plane") == true)
+                XCTAssertTrue(body?.contains("/health") == true)
+            })
+        }
+    }
+
     func testSchedulerSelectsLeastLoadedConnectedDevice() {
         let task = TaskRecord(
             id: "task-1",

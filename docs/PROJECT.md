@@ -1,101 +1,139 @@
 # Orchard 项目说明
 
-## 目标
+## 当前定位
 
-Orchard 是新的起点项目，一期只服务苹果生态：
+Orchard 一期先做“个人远程 AI 控制核心”，重点是：
 
-- 电脑端：macOS Agent
-- 手机端：iPhone 原生控制端
-- 服务器端：先用 Swift + Vapor，后续可替换为任意更适合的后端实现
+- `macOS Agent`
+- `Control Plane`
 
-这意味着当前初始化版本优先保证：
-
-- 项目边界清晰
-- 模型统一
-- 目录干净
-- 可以直接继续迭代
+手机端继续保留为 Companion，但不进入一期关键路径。
 
 ## 一期边界
 
-一期先只做下面这些能力：
+一期当前已经按下面边界实现：
 
-1. 中央控制面启动与基础 API
-2. macOS Agent 注册与心跳
-3. iPhone / Mac Companion 读取快照
-4. 基础任务模型和创建接口
+- 单用户
+- Tailscale 内网假设
+- Swift 技术栈
+- `launchd` 用户级 Agent
+- 单实例 Vapor Control Plane
+- SQLite 持久化
 
-明确不在初始化阶段做：
-
-- 多设备调度策略
-- 任务隔离与沙盒
-- WebSocket 实时日志
-- 复杂权限系统
-- 数据库存储
-- Docker / GPU 调度
-
-## 当前骨架
+## 当前协议与能力
 
 ### `OrchardCore`
 
-共享模型层，供服务端、Agent、控制端同时使用：
-
-- 设备模型
-- 任务模型
-- 快照模型
-- HTTP client
-- JSON 编解码策略
+- typed task model：
+  - `shell`
+  - `codex`
+- 共享模型：
+  - `WorkspaceDefinition`
+  - `AgentRegistrationRequest`
+  - `CreateTaskRequest`
+  - `TaskRecord`
+  - `TaskDetail`
+  - `DashboardSnapshot`
+- WebSocket 消息：
+  - `AgentSocketMessage`
+  - `ServerSocketMessage`
+- workspace 安全路径解析：
+  - `OrchardWorkspacePath`
 
 ### `OrchardControlPlane`
 
-基础控制面服务，目前包含：
-
-- `GET /health`
-- `GET /api/snapshot`
-- `GET /api/devices`
-- `POST /api/devices/register`
-- `POST /api/devices/:deviceID/heartbeat`
-- `GET /api/tasks`
-- `POST /api/tasks`
-
-当前状态先存在内存里，目的是先稳定协议和边界。
+- HTTP API：
+  - `GET /health`
+  - `GET /api/snapshot`
+  - `GET /api/devices`
+  - `GET /api/tasks`
+  - `GET /api/tasks/:taskID`
+  - `POST /api/agents/register`
+  - `POST /api/tasks`
+  - `POST /api/tasks/:taskID/stop`
+- WebSocket：
+  - `GET /api/agents/:deviceID/session?token=...`
+- 持久化：
+  - `devices`
+  - `device_workspaces`
+  - `tasks`
+  - `task_logs`
+- 调度规则：
+  - 只派发 `queued`
+  - 设备必须在线
+  - 设备必须具备目标 capability
+  - 设备必须拥有目标 workspace
+  - 设备不能超过 `maxParallelTasks`
+  - 候选按 `runningTaskCount -> lastSeenAt -> deviceID` 排序
 
 ### `OrchardAgent`
 
-基础守护进程入口：
-
-- 读取环境变量
-- 注册设备
-- 每 10 秒发送一次心跳
-- 上报简单设备负载指标
+- 固定配置文件：
+  - `~/Library/Application Support/Orchard/agent.json`
+- 固定 runtime 目录：
+  - `~/Library/Application Support/Orchard/tasks/<taskID>/`
+- 执行器：
+  - `ShellRunner`
+  - `CodexRunner`
+- 行为：
+  - 启动时注册设备
+  - 建立单条 WebSocket
+  - 周期 heartbeat
+  - 收到任务后在目标 workspace 执行
+  - 流式发送日志
+  - 收到 stop 后 `SIGTERM`，10 秒后 `SIGKILL`
+  - 重连退避：`1 / 2 / 5 / 10 / 30` 秒
+  - Agent 重启后，把上次未完成任务上报为 `failed`，summary 为 `agent restarted`
 
 ### `OrchardCompanionApp`
 
-SwiftUI 原生控制端骨架：
+- 通过 HTTP API 查看概览、设备、任务列表与任务详情
+- 支持创建简单 `shell` / `codex` 任务
+- 支持停止运行中任务或取消排队任务
+- 主要用于后续原生控制端迭代
+- 一期不参与 Agent 核心通信链路
 
-- 配置服务地址
-- 拉取快照
-- 展示设备和任务
+## 配置
 
-## 环境变量
-
-### Control Plane
+### Control Plane 环境变量
 
 - `ORCHARD_BIND`
 - `ORCHARD_PORT`
+- `ORCHARD_DATA_DIR`
+- `ORCHARD_ENROLLMENT_TOKEN`
 
-### Agent
+### Agent 配置文件
 
-- `ORCHARD_SERVER_URL`
-- `ORCHARD_WORK_ROOT`
-- `ORCHARD_DEVICE_NAME`
-- `ORCHARD_DEVICE_ID`
+- 路径：
+  - `~/Library/Application Support/Orchard/agent.json`
+- 字段：
+  - `serverURL`
+  - `enrollmentToken`
+  - `deviceID`
+  - `deviceName`
+  - `maxParallelTasks`
+  - `workspaceRoots[]`
+  - `heartbeatIntervalSeconds`
+  - `codexBinaryPath`
 
-## 后续推荐拆分
+## 当前验证状态
 
-下一轮建议优先做：
+- `swift build` 通过
+- `swift test` 通过
+- 已覆盖的自动化测试：
+  - payload 编解码
+  - workspace 路径约束
+  - Agent 重启后未完成任务回补失败状态
+  - 调度排序
+  - 队列任务停止
+  - shell 任务端到端执行
+  - `running -> stopRequested -> cancelled` 端到端
+  - SQLite 重启后持久化
 
-1. 任务领取与执行
-2. 停止任务
-3. 任务日志
-4. 持久化
-5. launchd 安装脚本
+## 下一轮建议
+
+1. 给 Agent 增加真实资源采集
+2. 给 Companion 增加实时刷新能力（WebSocket / push）
+3. 给 Companion 增加任务重试和失败摘要优化
+4. 增加 `launchd` 安装脚本
+5. 增加 agent 配置初始化命令

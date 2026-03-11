@@ -26,7 +26,10 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/vapor/vapor.git", from: "4.118.0")
+        .package(url: "https://github.com/vapor/vapor.git", from: "4.118.0"),
+        .package(url: "https://github.com/vapor/fluent.git", from: "4.10.0"),
+        .package(url: "https://github.com/vapor/fluent-kit.git", from: "1.52.2"),
+        .package(url: "https://github.com/vapor/fluent-sqlite-driver.git", from: "4.7.0")
     ],
     targets: [
         .target(
@@ -36,7 +39,10 @@ let package = Package(
             name: "OrchardControlPlane",
             dependencies: [
                 "OrchardCore",
-                .product(name: "Vapor", package: "vapor")
+                .product(name: "Vapor", package: "vapor"),
+                .product(name: "Fluent", package: "fluent"),
+                .product(name: "FluentSQL", package: "fluent-kit"),
+                .product(name: "FluentSQLiteDriver", package: "fluent-sqlite-driver")
             ]
         ),
         .executableTarget(
@@ -50,6 +56,31 @@ let package = Package(
         .testTarget(
             name: "OrchardCoreTests",
             dependencies: ["OrchardCore"]
+        ),
+        .testTarget(
+            name: "OrchardControlPlaneTests",
+            dependencies: [
+                "OrchardCore",
+                "OrchardControlPlane",
+                .product(name: "XCTVapor", package: "vapor"),
+                .product(name: "FluentSQLiteDriver", package: "fluent-sqlite-driver")
+            ]
+        ),
+        .testTarget(
+            name: "OrchardAgentTests",
+            dependencies: [
+                "OrchardCore",
+                "OrchardAgent"
+            ]
+        ),
+        .testTarget(
+            name: "OrchardIntegrationTests",
+            dependencies: [
+                "OrchardCore",
+                "OrchardAgent",
+                "OrchardControlPlane",
+                .product(name: "Vapor", package: "vapor")
+            ]
         )
     ]
 )

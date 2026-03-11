@@ -43,32 +43,30 @@ public struct OrchardAPIClient: Sendable {
         try await get("api/tasks/\(taskID)")
     }
 
-    public func registerDevice(_ registration: DeviceRegistration) async throws -> DeviceRecord {
-        try await post("api/devices/register", body: registration)
-    }
-
-    public func sendHeartbeat(deviceID: String, metrics: DeviceMetrics) async throws -> DeviceRecord {
-        try await post("api/devices/\(deviceID)/heartbeat", body: HeartbeatRequest(metrics: metrics))
-    }
-
-    public func claimNextTask(deviceID: String) async throws -> TaskRecord? {
-        try await post("api/devices/\(deviceID)/claim-next", body: ClaimTaskRequest(deviceID: deviceID))
+    public func registerAgent(_ registration: AgentRegistrationRequest) async throws -> DeviceRecord {
+        try await post("api/agents/register", body: registration)
     }
 
     public func createTask(_ request: CreateTaskRequest) async throws -> TaskRecord {
         try await post("api/tasks", body: request)
     }
 
-    public func appendLogs(taskID: String, deviceID: String, lines: [String]) async throws {
-        _ = try await post("api/tasks/\(taskID)/logs", body: AppendTaskLogsRequest(deviceID: deviceID, lines: lines)) as EmptyResponse
-    }
-
-    public func completeTask(taskID: String, request: CompleteTaskRequest) async throws -> TaskRecord {
-        try await post("api/tasks/\(taskID)/complete", body: request)
-    }
-
     public func stopTask(taskID: String, reason: String? = nil) async throws -> TaskRecord {
         try await post("api/tasks/\(taskID)/stop", body: StopTaskRequest(reason: reason))
+    }
+
+    public func makeAgentSessionURL(deviceID: String, enrollmentToken: String) throws -> URL {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: true) else {
+            throw OrchardAPIError.invalidURL
+        }
+        let basePath = components.path.hasSuffix("/") ? String(components.path.dropLast()) : components.path
+        components.scheme = baseURL.scheme == "https" ? "wss" : "ws"
+        components.path = "\(basePath)/api/agents/\(deviceID)/session"
+        components.queryItems = [URLQueryItem(name: "token", value: enrollmentToken)]
+        guard let url = components.url else {
+            throw OrchardAPIError.invalidURL
+        }
+        return url
     }
 
     private func get<Response: Decodable>(_ path: String) async throws -> Response {

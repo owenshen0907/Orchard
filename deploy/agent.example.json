@@ -1,0 +1,16 @@
+{
+  "serverURL": "http://127.0.0.1:8080",
+  "enrollmentToken": "replace-me",
+  "deviceID": "mac-studio-01",
+  "deviceName": "Mac Studio",
+  "maxParallelTasks": 2,
+  "workspaceRoots": [
+    {
+      "id": "main",
+      "name": "Main Workspace",
+      "rootPath": "/Users/owen/MyCodeSpace"
+    }
+  ],
+  "heartbeatIntervalSeconds": 10,
+  "codexBinaryPath": "/opt/homebrew/bin/codex"
+}

@@ -76,6 +76,11 @@ Orchard 一期先做“个人远程 AI 控制核心”，重点是：
   - `ShellRunner`
   - `CodexRunner`
 - 行为：
+  - CLI 子命令：
+    - `run`
+    - `init-config`
+    - `install-launch-agent`
+    - `doctor`
   - 启动时注册设备
   - 建立单条 WebSocket
   - 周期 heartbeat
@@ -124,6 +129,9 @@ Orchard 一期先做“个人远程 AI 控制核心”，重点是：
   - payload 编解码
   - workspace 路径约束
   - Agent 重启后未完成任务回补失败状态
+  - Agent CLI 参数解析
+  - agent 配置初始化
+  - LaunchAgent plist 渲染
   - 调度排序
   - 队列任务停止
   - shell 任务端到端执行
@@ -132,8 +140,8 @@ Orchard 一期先做“个人远程 AI 控制核心”，重点是：
 
 ## 下一轮建议
 
-1. 给 Agent 增加真实资源采集
-2. 给 Companion 增加实时刷新能力（WebSocket / push）
-3. 给 Companion 增加任务重试和失败摘要优化
-4. 增加 `launchd` 安装脚本
-5. 增加 agent 配置初始化命令
+1. 给 Companion 增加实时刷新能力（WebSocket / push）
+2. 给 `doctor` 增加更深的 launchctl / 日志状态检查
+3. 给 Control Plane 增加更严格的鉴权与会话保护
+4. 补充 release 安装包或一键安装脚本
+5. 增加任务历史筛选和更稳定的失败摘要策略

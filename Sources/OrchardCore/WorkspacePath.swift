@@ -8,11 +8,11 @@ public enum OrchardWorkspacePathError: Error, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .emptyRoot:
-            return "Workspace root path is empty."
+            return "工作区根路径不能为空。"
         case .absoluteRelativePath:
-            return "Relative path must not be absolute."
+            return "相对路径不能是绝对路径。"
         case .escapedWorkspace:
-            return "Resolved working directory escapes the registered workspace root."
+            return "解析后的工作目录超出了已注册工作区的根路径。"
         }
     }
 }

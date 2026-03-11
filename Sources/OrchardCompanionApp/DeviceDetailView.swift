@@ -22,13 +22,13 @@ struct DeviceDetailView: View {
                     HeroCard(
                         eyebrow: device.platform.displayName,
                         title: device.statusTitle,
-                        message: "\(device.name) 当前 \(device.statusTitle.lowercased())，最近一次活跃于 \(device.lastSeenAt.formatted(date: .abbreviated, time: .shortened))。",
+                        message: "\(device.name) 当前处于\(device.statusTitle)状态，最近一次活跃于 \(device.lastSeenAt.formatted(date: .abbreviated, time: .shortened))。",
                         symbolName: device.platform.symbolName,
                         tint: device.statusColor
                     )
 
                     LazyVGrid(columns: metricColumns, spacing: 14) {
-                        DetailHeroMetric(title: "Load", value: device.metrics.loadAverage.map { String(format: "%.2f", $0) } ?? "--")
+                        DetailHeroMetric(title: "负载", value: device.metrics.loadAverage.map { String(format: "%.2f", $0) } ?? "--")
                         DetailHeroMetric(title: "运行任务数", value: "\(device.metrics.runningTasks)")
                         DetailHeroMetric(title: "CPU", value: device.metrics.cpuPercentApprox.map { String(format: "%.0f%%", $0) } ?? "--")
                         DetailHeroMetric(title: "内存", value: device.metrics.memoryPercent.map { String(format: "%.0f%%", $0) } ?? "--")
@@ -56,7 +56,7 @@ struct DeviceDetailView: View {
             Section {
                 LabeledContent("CPU", value: device.metrics.cpuPercentApprox.map { String(format: "%.0f%%", $0) } ?? "--")
                 LabeledContent("内存", value: device.metrics.memoryPercent.map { String(format: "%.0f%%", $0) } ?? "--")
-                LabeledContent("Load", value: device.metrics.loadAverage.map { String(format: "%.2f", $0) } ?? "--")
+                LabeledContent("负载", value: device.metrics.loadAverage.map { String(format: "%.2f", $0) } ?? "--")
                 LabeledContent("运行任务数", value: "\(device.metrics.runningTasks)")
                 LabeledContent("最大并行", value: "\(device.maxParallelTasks)")
             } header: {
@@ -98,7 +98,7 @@ struct DeviceDetailView: View {
                     }
                 }
             } header: {
-                SectionHeaderLabel(title: "Workspace")
+                SectionHeaderLabel(title: "工作区")
             }
         }
         .companionListStyle()

@@ -39,7 +39,7 @@ struct CreateTaskSheet: View {
                 Section {
                     HeroCard(
                         eyebrow: "快速创建",
-                        title: kind == .shell ? "Shell 任务" : "Codex 任务",
+                        title: kind == .shell ? "命令任务" : "Codex 任务",
                         message: "手机端适合提交短命令和明确目标，复杂配置建议回到桌面处理。",
                         symbolName: kind.symbolName,
                         tint: kind == .shell ? .indigo : .blue
@@ -55,7 +55,7 @@ struct CreateTaskSheet: View {
                         }
                     }
 
-                    Picker("Workspace", selection: $workspaceID) {
+                    Picker("工作区", selection: $workspaceID) {
                         Text("请选择").tag("")
                         ForEach(availableWorkspaces) { workspace in
                             Text(workspace.name).tag(workspace.id)

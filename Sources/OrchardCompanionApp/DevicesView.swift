@@ -91,7 +91,7 @@ struct DevicesView: View {
             return nil
         }
         if searchText.trimmedOrEmpty.isEmpty {
-            return "按当前工作负载展示"
+            return "按当前负载排序"
         }
         return "“\(searchText.trimmedOrEmpty)” 的搜索结果"
     }
@@ -222,12 +222,12 @@ struct DeviceRow: View {
                         tint: .secondary
                     )
                     MetaCapsule(
-                        title: "load \(String(format: "%.2f", device.metrics.loadAverage ?? 0))",
+                        title: "负载 \(String(format: "%.2f", device.metrics.loadAverage ?? 0))",
                         symbolName: "speedometer",
                         tint: device.statusColor
                     )
                     MetaCapsule(
-                        title: "tasks \(device.metrics.runningTasks)",
+                        title: "任务 \(device.metrics.runningTasks)",
                         symbolName: "bolt.horizontal",
                         tint: .secondary
                     )

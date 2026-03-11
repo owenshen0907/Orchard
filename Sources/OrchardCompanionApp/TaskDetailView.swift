@@ -50,7 +50,7 @@ struct TaskDetailView: View {
             return nil
         }
         if let exitCode = currentTask.exitCode {
-            return "失败摘要 · Exit \(exitCode)"
+            return "失败摘要 · 退出码 \(exitCode)"
         }
         return "失败摘要"
     }
@@ -105,7 +105,7 @@ struct TaskDetailView: View {
                     )
 
                     LazyVGrid(columns: metricColumns, spacing: 14) {
-                        DetailHeroMetric(title: "Workspace", value: currentTask.workspaceID)
+                        DetailHeroMetric(title: "工作区", value: currentTask.workspaceID)
                         DetailHeroMetric(title: "设备", value: currentTask.assignedDeviceID ?? "待分配")
                         DetailHeroMetric(title: "优先级", value: currentTask.priority.displayName)
                         DetailHeroMetric(
@@ -137,7 +137,7 @@ struct TaskDetailView: View {
                     StatusBadge(title: currentTask.statusTitle, tint: currentTask.stateColor)
                 }
                 LabeledContent("类型", value: currentTask.kind.displayName)
-                LabeledContent("Workspace", value: currentTask.workspaceID)
+                LabeledContent("工作区", value: currentTask.workspaceID)
                 LabeledContent("设备", value: currentTask.assignedDeviceID ?? "待分配")
 
                 if let relativePath = currentTask.relativePath, !relativePath.isEmpty {

@@ -477,15 +477,15 @@ extension DeviceCapability {
     var displayName: String {
         switch self {
         case .shell:
-            return "Shell"
+            return "命令行"
         case .filesystem:
-            return "Filesystem"
+            return "文件系统"
         case .git:
             return "Git"
         case .docker:
             return "Docker"
         case .browser:
-            return "Browser"
+            return "浏览器"
         case .codex:
             return "Codex"
         }
@@ -500,7 +500,7 @@ extension DevicePlatform {
         case .iOS:
             return "iOS"
         case .unknown:
-            return "Unknown"
+            return "未知"
         }
     }
 
@@ -540,7 +540,7 @@ extension TaskKind {
     var displayName: String {
         switch self {
         case .shell:
-            return "Shell"
+            return "命令"
         case .codex:
             return "Codex"
         }

@@ -22,14 +22,14 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
             history: nil,
             pageSizeLimit: app.fluent.pagination.pageSizeLimit
         ) else {
-            throw Abort(.serviceUnavailable, reason: "Database is unavailable.")
+            throw Abort(.serviceUnavailable, reason: "数据库当前不可用。")
         }
         return database
     }
 
     func validateEnrollment(token: String) throws {
         guard token == enrollmentToken else {
-            throw Abort(.unauthorized, reason: "Invalid enrollment token.")
+            throw Abort(.unauthorized, reason: "注册令牌无效。")
         }
     }
 
@@ -92,7 +92,7 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
     func fetchTaskDetail(taskID: String) async throws -> TaskDetail {
         let db = try database()
         guard let task = try await TaskModel.find(taskID, on: db) else {
-            throw Abort(.notFound, reason: "Task not found.")
+            throw Abort(.notFound, reason: "未找到任务。")
         }
 
         let logs = try await TaskLogModel.query(on: db)
@@ -154,7 +154,7 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
     func markDeviceSeen(deviceID: String, metrics: DeviceMetrics?) async throws -> DeviceRecord {
         let db = try database()
         guard let device = try await DeviceModel.find(deviceID, on: db) else {
-            throw Abort(.notFound, reason: "Device not registered.")
+            throw Abort(.notFound, reason: "设备尚未注册。")
         }
 
         device.lastSeenAt = Date()
@@ -167,13 +167,13 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
 
     func createTask(_ request: CreateTaskRequest) async throws -> TaskRecord {
         guard request.kind == request.payload.kind else {
-            throw Abort(.badRequest, reason: "Task kind does not match payload.")
+            throw Abort(.badRequest, reason: "任务类型与载荷不匹配。")
         }
         guard !request.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw Abort(.badRequest, reason: "Task title is required.")
+            throw Abort(.badRequest, reason: "任务标题不能为空。")
         }
         guard !request.workspaceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw Abort(.badRequest, reason: "workspaceID is required.")
+            throw Abort(.badRequest, reason: "工作区 ID 不能为空。")
         }
 
         let task = try TaskModel(taskID: UUID().uuidString.lowercased(), request: request, now: Date())
@@ -184,10 +184,10 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
     func assignTask(taskID: String, to deviceID: String) async throws -> TaskRecord {
         let db = try database()
         guard let task = try await TaskModel.find(taskID, on: db) else {
-            throw Abort(.notFound, reason: "Task not found.")
+            throw Abort(.notFound, reason: "未找到任务。")
         }
         guard task.status == .queued else {
-            throw Abort(.conflict, reason: "Task is no longer queued.")
+            throw Abort(.conflict, reason: "任务已经不在排队状态。")
         }
         let now = Date()
         task.status = .running
@@ -213,14 +213,14 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
     func requestStop(taskID: String, reason: String?) async throws -> TaskRecord {
         let db = try database()
         guard let task = try await TaskModel.find(taskID, on: db) else {
-            throw Abort(.notFound, reason: "Task not found.")
+            throw Abort(.notFound, reason: "未找到任务。")
         }
 
         switch task.status {
         case .queued:
             let now = Date()
             task.status = .cancelled
-            task.summary = reason ?? "Cancelled before execution."
+            task.summary = reason ?? "任务在执行前已取消。"
             task.finishedAt = now
             task.updatedAt = now
         case .running:
@@ -242,10 +242,10 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
     func appendLogs(deviceID: String, payload: AgentLogBatchPayload) async throws {
         let db = try database()
         guard let task = try await TaskModel.find(payload.taskID, on: db) else {
-            throw Abort(.notFound, reason: "Task not found.")
+            throw Abort(.notFound, reason: "未找到任务。")
         }
         guard task.assignedDeviceID == deviceID else {
-            throw Abort(.forbidden, reason: "Task is not assigned to this device.")
+            throw Abort(.forbidden, reason: "当前任务未分配给该设备。")
         }
 
         let existingCount = try await TaskLogModel.query(on: db)
@@ -267,10 +267,10 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
     func applyTaskUpdate(deviceID: String, payload: AgentTaskUpdatePayload) async throws -> TaskRecord {
         let db = try database()
         guard let task = try await TaskModel.find(payload.taskID, on: db) else {
-            throw Abort(.notFound, reason: "Task not found.")
+            throw Abort(.notFound, reason: "未找到任务。")
         }
         guard task.assignedDeviceID == deviceID else {
-            throw Abort(.forbidden, reason: "Task is not assigned to this device.")
+            throw Abort(.forbidden, reason: "当前任务未分配给该设备。")
         }
 
         let now = Date()
@@ -300,7 +300,7 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
     func requireDevice(deviceID: String) async throws -> DeviceRecord {
         let db = try database()
         guard let device = try await DeviceModel.find(deviceID, on: db) else {
-            throw Abort(.notFound, reason: "Device not found.")
+            throw Abort(.notFound, reason: "未找到设备。")
         }
         let workspaces = try await DeviceWorkspaceModel.query(on: db)
             .filter(\.$deviceID == deviceID)

@@ -24,7 +24,7 @@ public func makeOrchardControlPlaneApplication(environment: Environment) async t
     try await app.autoMigrate()
     guard let sqlDatabase = app.db as? any SQLDatabase else {
         throw NSError(domain: "OrchardControlPlane", code: 1, userInfo: [
-            NSLocalizedDescriptionKey: "Configured database does not expose SQLDatabase.",
+            NSLocalizedDescriptionKey: "当前数据库配置未提供 SQLDatabase。",
         ])
     }
     try await sqlDatabase.raw("PRAGMA journal_mode=WAL;").run()
@@ -96,7 +96,7 @@ private func configureRoutes(
 
     protected.get("api", "tasks", ":taskID") { req async throws in
         guard let taskID = req.parameters.get("taskID") else {
-            throw Abort(.badRequest, reason: "Missing taskID.")
+            throw Abort(.badRequest, reason: "缺少任务 ID。")
         }
         return try await store.fetchTaskDetail(taskID: taskID)
     }
@@ -117,7 +117,7 @@ private func configureRoutes(
 
     protected.post("api", "tasks", ":taskID", "stop") { req async throws in
         guard let taskID = req.parameters.get("taskID") else {
-            throw Abort(.badRequest, reason: "Missing taskID.")
+            throw Abort(.badRequest, reason: "缺少任务 ID。")
         }
         let request = try req.content.decode(StopTaskRequest.self)
         let task = try await store.requestStop(taskID: taskID, reason: request.reason)

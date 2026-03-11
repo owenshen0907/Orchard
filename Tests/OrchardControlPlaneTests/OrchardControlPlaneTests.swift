@@ -22,6 +22,8 @@ final class OrchardControlPlaneTests: XCTestCase {
                 let body = res.body.getString(at: res.body.readerIndex, length: res.body.readableBytes)
                 XCTAssertNotNil(body)
                 XCTAssertTrue(body?.contains("Orchard 控制平面") == true)
+                XCTAssertTrue(body?.contains("浏览器控制台") == true)
+                XCTAssertTrue(body?.contains("需要关注的任务") == true)
                 XCTAssertTrue(body?.contains("/health") == true)
             })
         }

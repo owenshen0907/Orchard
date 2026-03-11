@@ -46,11 +46,21 @@ private func configureRoutes(
     scheduler: TaskScheduler,
     accessControl: OrchardAccessControl
 ) {
-    app.get { req in
+    app.get { req async throws -> Response in
         guard !accessControl.isEnabled || accessControl.isAuthorized(req) else {
             return OrchardUnlockPage.response()
         }
-        return OrchardLandingPage.response(showLogout: accessControl.isEnabled)
+        do {
+            let snapshot = try await store.dashboardSnapshot()
+            return OrchardLandingPage.response(snapshot: snapshot, showLogout: accessControl.isEnabled)
+        } catch {
+            req.logger.error("控制台快照加载失败：\(String(describing: error))")
+            return OrchardLandingPage.response(
+                snapshot: DashboardSnapshot(devices: [], tasks: []),
+                showLogout: accessControl.isEnabled,
+                errorMessage: "暂时无法加载实时数据，但服务仍可用。"
+            )
+        }
     }
 
     app.get("health") { _ in

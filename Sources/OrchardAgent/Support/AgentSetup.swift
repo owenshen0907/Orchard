@@ -91,6 +91,44 @@ struct LaunchAgentInstallResult: Sendable {
     var bootstrapPerformed: Bool
 }
 
+struct LaunchAgentPlistInfo: Sendable {
+    var label: String
+    var programArguments: [String]
+    var workingDirectoryURL: URL?
+    var standardOutURL: URL?
+    var standardErrorURL: URL?
+
+    static func load(from url: URL) throws -> LaunchAgentPlistInfo {
+        let data = try Data(contentsOf: url)
+        let plist = try PropertyListSerialization.propertyList(from: data, format: nil)
+
+        guard let dictionary = plist as? [String: Any] else {
+            throw NSError(domain: "OrchardLaunchAgent", code: 4, userInfo: [
+                NSLocalizedDescriptionKey: "LaunchAgent plist is not a dictionary: \(url.path)",
+            ])
+        }
+
+        guard let label = dictionary["Label"] as? String, !label.isEmpty else {
+            throw NSError(domain: "OrchardLaunchAgent", code: 5, userInfo: [
+                NSLocalizedDescriptionKey: "LaunchAgent plist is missing Label: \(url.path)",
+            ])
+        }
+
+        let programArguments = dictionary["ProgramArguments"] as? [String] ?? []
+        let workingDirectoryURL = (dictionary["WorkingDirectory"] as? String).map { URL(fileURLWithPath: $0) }
+        let standardOutURL = (dictionary["StandardOutPath"] as? String).map { URL(fileURLWithPath: $0) }
+        let standardErrorURL = (dictionary["StandardErrorPath"] as? String).map { URL(fileURLWithPath: $0) }
+
+        return LaunchAgentPlistInfo(
+            label: label,
+            programArguments: programArguments,
+            workingDirectoryURL: workingDirectoryURL,
+            standardOutURL: standardOutURL,
+            standardErrorURL: standardErrorURL
+        )
+    }
+}
+
 struct AgentDoctorCheck: Sendable {
     var title: String
     var isSuccess: Bool
@@ -337,6 +375,43 @@ enum AgentDoctor {
                         detail: exists ? plistURL.path : "Missing \(plistURL.path)"
                     )
                 )
+
+                if exists {
+                    do {
+                        let plistInfo = try LaunchAgentPlistInfo.load(from: plistURL)
+                        checks.append(
+                            AgentDoctorCheck(
+                                title: "LaunchAgent label",
+                                isSuccess: plistInfo.label == options.launchAgentLabel,
+                                detail: plistInfo.label
+                            )
+                        )
+                        checks.append(
+                            AgentDoctorCheck(
+                                title: "LaunchAgent working dir",
+                                isSuccess: validateDirectory(plistInfo.workingDirectoryURL),
+                                detail: plistInfo.workingDirectoryURL?.path ?? "Missing WorkingDirectory"
+                            )
+                        )
+                        checks.append(
+                            makeLogCheck(title: "LaunchAgent stdout log", logURL: plistInfo.standardOutURL)
+                        )
+                        checks.append(
+                            makeLogCheck(title: "LaunchAgent stderr log", logURL: plistInfo.standardErrorURL)
+                        )
+                        checks.append(
+                            checkLaunchAgentService(label: plistInfo.label)
+                        )
+                    } catch {
+                        checks.append(
+                            AgentDoctorCheck(
+                                title: "LaunchAgent plist parsing",
+                                isSuccess: false,
+                                detail: error.localizedDescription
+                            )
+                        )
+                    }
+                }
             } else {
                 checks.append(
                     AgentDoctorCheck(
@@ -406,6 +481,77 @@ enum AgentDoctor {
         components.fragment = nil
         return components.url
     }
+
+    private static func checkLaunchAgentService(label: String) -> AgentDoctorCheck {
+        let serviceTarget = "gui/\(getuid())/\(label)"
+        do {
+            let result = try SystemCommandRunner.runDetailed(
+                command: "launchctl",
+                arguments: ["print", serviceTarget],
+                allowFailure: true
+            )
+            guard result.terminationStatus == 0 else {
+                return AgentDoctorCheck(
+                    title: "LaunchAgent service",
+                    isSuccess: false,
+                    detail: firstUsefulLine(in: result.output) ?? "launchctl print failed for \(serviceTarget)"
+                )
+            }
+
+            let state = launchctlState(from: result.output) ?? "loaded"
+            return AgentDoctorCheck(
+                title: "LaunchAgent service",
+                isSuccess: true,
+                detail: "\(serviceTarget) (\(state))"
+            )
+        } catch {
+            return AgentDoctorCheck(
+                title: "LaunchAgent service",
+                isSuccess: false,
+                detail: error.localizedDescription
+            )
+        }
+    }
+
+    private static func makeLogCheck(title: String, logURL: URL?) -> AgentDoctorCheck {
+        guard let logURL else {
+            return AgentDoctorCheck(title: title, isSuccess: false, detail: "Path missing from plist")
+        }
+
+        let directoryURL = logURL.deletingLastPathComponent()
+        guard validateDirectory(directoryURL) else {
+            return AgentDoctorCheck(title: title, isSuccess: false, detail: "Missing log directory \(directoryURL.path)")
+        }
+
+        let exists = FileManager.default.fileExists(atPath: logURL.path)
+        let detail = exists ? "\(logURL.path) (present)" : "\(logURL.path) (directory ready)"
+        return AgentDoctorCheck(title: title, isSuccess: true, detail: detail)
+    }
+
+    private static func validateDirectory(_ url: URL?) -> Bool {
+        guard let url else {
+            return false
+        }
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    private static func launchctlState(from output: String) -> String? {
+        for rawLine in output.split(separator: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.hasPrefix("state = ") {
+                return String(line.dropFirst("state = ".count))
+            }
+        }
+        return nil
+    }
+
+    private static func firstUsefulLine(in output: String) -> String? {
+        output
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty })
+    }
 }
 
 enum ExecutableLocator {
@@ -446,6 +592,11 @@ enum ExecutableLocator {
 private enum SystemCommandRunner {
     @discardableResult
     static func run(command: String, arguments: [String], allowFailure: Bool = false) throws -> String {
+        let result = try runDetailed(command: command, arguments: arguments, allowFailure: allowFailure)
+        return result.output
+    }
+
+    static func runDetailed(command: String, arguments: [String], allowFailure: Bool = false) throws -> SystemCommandResult {
         let executableURL = ExecutableLocator.resolve(commandOrPath: command) ?? URL(fileURLWithPath: "/bin/\(command)")
         let process = Process()
         let stdout = Pipe()
@@ -468,8 +619,13 @@ private enum SystemCommandRunner {
             ])
         }
 
-        return output
+        return SystemCommandResult(terminationStatus: process.terminationStatus, output: output)
     }
+}
+
+struct SystemCommandResult: Sendable {
+    var terminationStatus: Int32
+    var output: String
 }
 
 enum AgentSetupDefaults {

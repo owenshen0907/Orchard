@@ -57,6 +57,28 @@ final class OrchardAgentCLITests: XCTestCase {
         XCTAssertTrue(plist.contains("/Users/owen/Library/Logs/Orchard/agent.out.log"))
     }
 
+    func testLaunchAgentPlistInfoParsesRenderedPlist() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let plistURL = directory.appendingPathComponent("agent.plist", isDirectory: false)
+        let plist = LaunchAgentInstaller.renderPlist(
+            label: "com.example.orchard",
+            binaryPath: "/Applications/OrchardAgent",
+            workingDirectoryPath: "/Users/owen/Orchard",
+            logDirectoryPath: "/Users/owen/Library/Logs/Orchard"
+        )
+        try plist.write(to: plistURL, atomically: true, encoding: .utf8)
+
+        let info = try LaunchAgentPlistInfo.load(from: plistURL)
+
+        XCTAssertEqual(info.label, "com.example.orchard")
+        XCTAssertEqual(info.programArguments.first, "/Applications/OrchardAgent")
+        XCTAssertEqual(info.workingDirectoryURL?.path, "/Users/owen/Orchard")
+        XCTAssertEqual(info.standardOutURL?.path, "/Users/owen/Library/Logs/Orchard/agent.out.log")
+        XCTAssertEqual(info.standardErrorURL?.path, "/Users/owen/Library/Logs/Orchard/agent.err.log")
+    }
+
     func testDoctorPassesWithSkippedNetworkAndExistingPlist() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -91,6 +113,7 @@ final class OrchardAgentCLITests: XCTestCase {
         var options = try AgentDoctorOptions(configURL: configURL)
         options.plistURL = plistURL
         options.skipNetwork = true
+        options.skipLaunchAgent = true
 
         let report = await AgentDoctor.run(options: options)
 

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.owen.orchard.agent</string>
+  <string>__ORCHARD_LABEL__</string>
 
   <key>ProgramArguments</key>
   <array>

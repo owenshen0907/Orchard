@@ -1,7 +1,14 @@
 import Vapor
 
 enum OrchardLandingPage {
-    static let html = #"""
+    static func response(showLogout: Bool = false) -> Response {
+        let logoutHTML = showLogout ? """
+        <form class="logout" method="post" action="/logout">
+          <button type="submit">Lock</button>
+        </form>
+        """ : ""
+
+        let html = #"""
 <!doctype html>
 <html lang="en">
 <head>
@@ -41,6 +48,7 @@ enum OrchardLandingPage {
     }
 
     main {
+      position: relative;
       width: min(760px, 100%);
       background: var(--panel);
       border: 1px solid var(--border);
@@ -48,6 +56,28 @@ enum OrchardLandingPage {
       box-shadow: var(--shadow);
       padding: 32px;
       backdrop-filter: blur(10px);
+    }
+
+    .logout {
+      position: absolute;
+      top: 24px;
+      right: 24px;
+      margin: 0;
+    }
+
+    .logout button {
+      appearance: none;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.82);
+      color: var(--ink);
+      padding: 9px 14px;
+      font: 600 13px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      cursor: pointer;
+    }
+
+    .logout button:hover {
+      background: rgba(255, 255, 255, 0.96);
     }
 
     .badge {
@@ -149,6 +179,7 @@ enum OrchardLandingPage {
 </head>
 <body>
   <main>
+    __LOGOUT__
     <div class="badge">Orchard Control Plane</div>
     <h1>Service is online.</h1>
     <p>
@@ -197,10 +228,8 @@ enum OrchardLandingPage {
 </body>
 </html>
 """#
-
-    static func response() -> Response {
         var headers = HTTPHeaders()
         headers.add(name: .contentType, value: "text/html; charset=utf-8")
-        return Response(status: .ok, headers: headers, body: .init(string: html))
+        return Response(status: .ok, headers: headers, body: .init(string: html.replacingOccurrences(of: "__LOGOUT__", with: logoutHTML)))
     }
 }

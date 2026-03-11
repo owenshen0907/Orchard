@@ -30,11 +30,12 @@ public func makeOrchardControlPlaneApplication(environment: Environment) async t
     try await sqlDatabase.raw("PRAGMA journal_mode=WAL;").run()
 
     let enrollmentToken = Environment.get("ORCHARD_ENROLLMENT_TOKEN") ?? "orchard-dev-token"
+    let accessControl = OrchardAccessControl(accessKey: Environment.get("ORCHARD_ACCESS_KEY"))
     let store = OrchardControlPlaneStore(app: app, enrollmentToken: enrollmentToken)
     let registry = AgentConnectionRegistry()
     let scheduler = TaskScheduler(store: store, registry: registry)
 
-    configureRoutes(app: app, store: store, registry: registry, scheduler: scheduler)
+    configureRoutes(app: app, store: store, registry: registry, scheduler: scheduler, accessControl: accessControl)
     return app
 }
 
@@ -42,29 +43,58 @@ private func configureRoutes(
     app: Application,
     store: OrchardControlPlaneStore,
     registry: AgentConnectionRegistry,
-    scheduler: TaskScheduler
+    scheduler: TaskScheduler,
+    accessControl: OrchardAccessControl
 ) {
-    app.get { _ in
-        OrchardLandingPage.response()
+    app.get { req in
+        guard !accessControl.isEnabled || accessControl.isAuthorized(req) else {
+            return OrchardUnlockPage.response()
+        }
+        return OrchardLandingPage.response(showLogout: accessControl.isEnabled)
     }
 
     app.get("health") { _ in
         ["status": "ok", "service": "orchard-control-plane"]
     }
 
-    app.get("api", "snapshot") { _ async throws in
+    app.post("unlock") { req async throws -> Response in
+        guard accessControl.isEnabled else {
+            return req.redirect(to: "/")
+        }
+
+        let unlockRequest = try req.content.decode(OrchardUnlockRequest.self)
+        guard unlockRequest.accessKey == accessControl.accessKey else {
+            return OrchardUnlockPage.response(status: .unauthorized, errorMessage: "The provided access key is invalid.")
+        }
+
+        let response = req.redirect(to: "/")
+        if let cookie = accessControl.makeUnlockCookie() {
+            response.cookies[OrchardAccessControl.cookieName] = cookie
+        }
+        return response
+    }
+
+    app.post("logout") { req -> Response in
+        let response = req.redirect(to: "/")
+        response.cookies[OrchardAccessControl.cookieName] = OrchardAccessControl.makeExpiredCookie()
+        return response
+    }
+
+    let protected = app.grouped(OrchardAccessKeyMiddleware(accessControl: accessControl))
+
+    protected.get("api", "snapshot") { _ async throws in
         try await store.dashboardSnapshot()
     }
 
-    app.get("api", "devices") { _ async throws in
+    protected.get("api", "devices") { _ async throws in
         try await store.listDevices()
     }
 
-    app.get("api", "tasks") { _ async throws in
+    protected.get("api", "tasks") { _ async throws in
         try await store.listTasks()
     }
 
-    app.get("api", "tasks", ":taskID") { req async throws in
+    protected.get("api", "tasks", ":taskID") { req async throws in
         guard let taskID = req.parameters.get("taskID") else {
             throw Abort(.badRequest, reason: "Missing taskID.")
         }
@@ -78,14 +108,14 @@ private func configureRoutes(
         return device
     }
 
-    app.post("api", "tasks") { req async throws in
+    protected.post("api", "tasks") { req async throws in
         let create = try req.content.decode(CreateTaskRequest.self)
         let task = try await store.createTask(create)
         await scheduler.trigger()
         return task
     }
 
-    app.post("api", "tasks", ":taskID", "stop") { req async throws in
+    protected.post("api", "tasks", ":taskID", "stop") { req async throws in
         guard let taskID = req.parameters.get("taskID") else {
             throw Abort(.badRequest, reason: "Missing taskID.")
         }
@@ -139,6 +169,10 @@ private func configureRoutes(
             registry.disconnect(deviceID: deviceID, socket: ws)
         }
     }
+}
+
+struct OrchardUnlockRequest: Content {
+    let accessKey: String
 }
 
 private func closeSocket(_ socket: WebSocket, code: WebSocketErrorCode = .goingAway) {

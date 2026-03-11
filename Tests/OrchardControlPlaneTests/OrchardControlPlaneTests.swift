@@ -208,22 +208,101 @@ final class OrchardControlPlaneTests: XCTestCase {
             })
         }
     }
+
+    func testProtectedRoutesRequireAccessKeyWhenConfigured() async throws {
+        let dataDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dataDirectory) }
+
+        try await withTestEnvironment(dataDirectory: dataDirectory, accessKey: "browser-secret") {
+            let app = try await makeOrchardControlPlaneApplication(environment: .testing)
+            defer { Task { try? await app.asyncShutdown() } }
+
+            try await app.test(.GET, "/", afterResponse: { res async throws in
+                XCTAssertEqual(res.status, .ok)
+                let body = res.body.getString(at: res.body.readerIndex, length: res.body.readableBytes)
+                XCTAssertTrue(body?.contains("Enter access key.") == true)
+            })
+
+            try await app.test(.GET, "/api/snapshot", afterResponse: { res async throws in
+                XCTAssertEqual(res.status, .unauthorized)
+            })
+
+            try await app.test(.POST, "/unlock", beforeRequest: { req async throws in
+                try req.content.encode(OrchardUnlockRequest(accessKey: "browser-secret"), as: .urlEncodedForm)
+            }, afterResponse: { res async throws in
+                XCTAssertEqual(res.status, .seeOther)
+                XCTAssertEqual(res.headers.first(name: .location), "/")
+                XCTAssertEqual(res.headers.setCookie?[OrchardAccessControl.cookieName]?.string, "browser-secret")
+            })
+
+            try await app.test(.GET, "/", beforeRequest: { req async throws in
+                var cookies = HTTPCookies()
+                cookies[OrchardAccessControl.cookieName] = .init(string: "browser-secret")
+                req.headers.cookie = cookies
+            }, afterResponse: { res async throws in
+                XCTAssertEqual(res.status, .ok)
+                let body = res.body.getString(at: res.body.readerIndex, length: res.body.readableBytes)
+                XCTAssertTrue(body?.contains("Orchard Control Plane") == true)
+            })
+
+            try await app.test(.GET, "/api/snapshot", beforeRequest: { req async throws in
+                req.headers.replaceOrAdd(name: OrchardAccessControl.headerName, value: "browser-secret")
+            }, afterResponse: { res async throws in
+                XCTAssertEqual(res.status, .ok)
+            })
+        }
+    }
+
+    func testAgentRegistrationStillUsesEnrollmentTokenWhenAccessKeyEnabled() async throws {
+        let dataDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dataDirectory) }
+
+        try await withTestEnvironment(dataDirectory: dataDirectory, token: "orchard-test-token", accessKey: "browser-secret") {
+            let app = try await makeOrchardControlPlaneApplication(environment: .testing)
+            defer { Task { try? await app.asyncShutdown() } }
+
+            let registration = AgentRegistrationRequest(
+                enrollmentToken: "orchard-test-token",
+                deviceID: "device-1",
+                name: "Device 1",
+                hostName: "device-1.local",
+                platform: .macOS,
+                capabilities: [.shell],
+                maxParallelTasks: 1,
+                workspaces: [WorkspaceDefinition(id: "workspace-a", name: "Workspace A", rootPath: "/tmp")]
+            )
+
+            try await app.test(.POST, "/api/agents/register", beforeRequest: { req async throws in
+                try req.content.encode(registration)
+            }, afterResponse: { res async throws in
+                XCTAssertEqual(res.status, .ok)
+            })
+        }
+    }
 }
 
 private func withTestEnvironment<T>(
     dataDirectory: URL,
     token: String = "orchard-test-token",
+    accessKey: String? = nil,
     operation: () async throws -> T
 ) async throws -> T {
     let previousDataDirectory = currentEnvironmentValue(for: "ORCHARD_DATA_DIR")
     let previousToken = currentEnvironmentValue(for: "ORCHARD_ENROLLMENT_TOKEN")
+    let previousAccessKey = currentEnvironmentValue(for: "ORCHARD_ACCESS_KEY")
 
     setenv("ORCHARD_DATA_DIR", dataDirectory.path, 1)
     setenv("ORCHARD_ENROLLMENT_TOKEN", token, 1)
+    if let accessKey {
+        setenv("ORCHARD_ACCESS_KEY", accessKey, 1)
+    } else {
+        unsetenv("ORCHARD_ACCESS_KEY")
+    }
 
     defer {
         restoreEnvironmentValue(previousDataDirectory, for: "ORCHARD_DATA_DIR")
         restoreEnvironmentValue(previousToken, for: "ORCHARD_ENROLLMENT_TOKEN")
+        restoreEnvironmentValue(previousAccessKey, for: "ORCHARD_ACCESS_KEY")
     }
 
     return try await operation()

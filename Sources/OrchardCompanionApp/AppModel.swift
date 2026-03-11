@@ -46,6 +46,7 @@ final class AppModel: ObservableObject {
         guard let url = URL(string: serverURLString) else {
             throw OrchardAPIError.invalidURL
         }
-        return OrchardAPIClient(baseURL: url)
+        let accessKey = UserDefaults.standard.string(forKey: "orchard.accessKey")
+        return OrchardAPIClient(baseURL: url, accessKey: accessKey)
     }
 }

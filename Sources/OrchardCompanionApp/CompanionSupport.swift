@@ -276,6 +276,7 @@ struct CompanionToast: View {
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @Binding var serverURL: String
+    @Binding var accessKey: String
 
     @Environment(\.dismiss) private var dismiss
 
@@ -287,6 +288,12 @@ struct SettingsView: View {
 #if os(iOS)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
+                        .autocorrectionDisabled()
+#endif
+
+                    SecureField("Access Key", text: $accessKey)
+#if os(iOS)
+                        .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
 #endif
 

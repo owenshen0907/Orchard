@@ -20,14 +20,17 @@ public enum OrchardAPIError: Error, LocalizedError {
 // FoundationNetworking on Linux does not consistently carry Sendable annotations.
 public struct OrchardAPIClient: @unchecked Sendable {
     public var baseURL: URL
+    public var accessKey: String?
     public var session: URLSession
 
-    public init(baseURL: URL, session: URLSession = .shared) {
+    public init(baseURL: URL, accessKey: String? = nil, session: URLSession = .shared) {
         if baseURL.absoluteString.hasSuffix("/") {
             self.baseURL = baseURL
         } else {
             self.baseURL = baseURL.appending(path: "")
         }
+        let trimmedAccessKey = accessKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.accessKey = trimmedAccessKey?.isEmpty == false ? trimmedAccessKey : nil
         self.session = session
     }
 
@@ -93,6 +96,9 @@ public struct OrchardAPIClient: @unchecked Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let accessKey {
+            request.setValue(accessKey, forHTTPHeaderField: OrchardAccessControlHeader.name)
+        }
         return request
     }
 
@@ -110,4 +116,8 @@ public struct OrchardAPIClient: @unchecked Sendable {
         }
         return try OrchardJSON.decoder.decode(Response.self, from: data)
     }
+}
+
+private enum OrchardAccessControlHeader {
+    static let name = "X-Orchard-Access-Key"
 }

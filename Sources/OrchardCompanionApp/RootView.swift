@@ -3,6 +3,7 @@ import SwiftUI
 struct RootView: View {
     @StateObject private var model = AppModel()
     @AppStorage("orchard.serverURL") private var serverURL = "http://127.0.0.1:8080/"
+    @AppStorage("orchard.accessKey") private var accessKey = ""
     @State private var isShowingSettings = false
 
     var body: some View {
@@ -41,7 +42,7 @@ struct RootView: View {
             }
         }
         .sheet(isPresented: $isShowingSettings) {
-            SettingsView(model: model, serverURL: $serverURL)
+            SettingsView(model: model, serverURL: $serverURL, accessKey: $accessKey)
         }
         .task {
             await model.refresh(serverURLString: serverURL)

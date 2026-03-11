@@ -34,7 +34,7 @@ final class OrchardIntegrationTests: XCTestCase {
 
             let service = OrchardAgentService(config: config, stateStore: stateStore, tasksDirectory: tasksDirectory)
             try await withRunningAgent(service: service) {
-                let client = OrchardAPIClient(baseURL: context.baseURL)
+                let client = OrchardAPIClient(baseURL: context.baseURL, accessKey: context.accessKey)
                 let device = try await poll(timeout: 10) {
                     let devices = try await client.fetchDevices()
                     return devices.first(where: { $0.deviceID == config.deviceID && $0.status == .online })
@@ -89,7 +89,7 @@ final class OrchardIntegrationTests: XCTestCase {
 
             let service = OrchardAgentService(config: config, stateStore: stateStore, tasksDirectory: tasksDirectory)
             try await withRunningAgent(service: service) {
-                let client = OrchardAPIClient(baseURL: context.baseURL)
+                let client = OrchardAPIClient(baseURL: context.baseURL, accessKey: context.accessKey)
                 _ = try await poll(timeout: 10) {
                     let devices = try await client.fetchDevices()
                     return devices.first(where: { $0.deviceID == config.deviceID && $0.status == .online })
@@ -127,6 +127,7 @@ private struct IntegrationContext {
     var app: Application
     var baseURL: URL
     var token: String
+    var accessKey: String
 }
 
 private struct Sandbox {
@@ -135,12 +136,14 @@ private struct Sandbox {
 
 private func startControlPlane(in root: URL) async throws -> IntegrationContext {
     let token = "orchard-integration-token"
+    let accessKey = "orchard-integration-access"
     let dataDirectory = root.appendingPathComponent("control-plane-data", isDirectory: true)
     try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
 
     return try await withEnvironment([
         "ORCHARD_DATA_DIR": dataDirectory.path,
         "ORCHARD_ENROLLMENT_TOKEN": token,
+        "ORCHARD_ACCESS_KEY": accessKey,
         "ORCHARD_BIND": "127.0.0.1",
         "ORCHARD_PORT": "0",
     ]) {
@@ -160,7 +163,8 @@ private func startControlPlane(in root: URL) async throws -> IntegrationContext 
         return IntegrationContext(
             app: app,
             baseURL: URL(string: "http://127.0.0.1:\(port)")!,
-            token: token
+            token: token,
+            accessKey: accessKey
         )
     }
 }

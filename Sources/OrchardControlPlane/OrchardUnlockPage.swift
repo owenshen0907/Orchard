@@ -10,11 +10,11 @@ enum OrchardUnlockPage {
 
         let html = #"""
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Unlock Orchard</title>
+  <title>解锁 Orchard</title>
   <style>
     :root {
       color-scheme: light;
@@ -142,22 +142,21 @@ enum OrchardUnlockPage {
 </head>
 <body>
   <main>
-    <div class="badge">Protected Control Plane</div>
-    <h1>Enter access key.</h1>
+    <div class="badge">受保护的控制平面</div>
+    <h1>请输入访问密钥。</h1>
     <p>
-      This Orchard control plane is public on the network, but the operator surface is locked behind
-      a shared access key.
+      这个 Orchard 控制平面对公网开放，但管理界面和管理接口都需要共享访问密钥。
     </p>
     __MESSAGE__
     <form method="post" action="/unlock">
       <label>
-        Access key
-        <input type="password" name="accessKey" placeholder="Paste the shared key" autocomplete="current-password" required>
+        访问密钥
+        <input type="password" name="accessKey" placeholder="请输入共享密钥" autocomplete="current-password" required>
       </label>
-      <button type="submit">Unlock</button>
+      <button type="submit">解锁</button>
     </form>
     <p class="footnote">
-      Health checks stay on <code>/health</code>. Agent registration and live sessions still use the enrollment token.
+      健康检查仍保留在 <code>/health</code> 供探活使用。Agent 注册和实时会话仍然使用 enrollment token。
     </p>
   </main>
 </body>

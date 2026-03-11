@@ -61,7 +61,7 @@ struct OrchardAccessKeyMiddleware: AsyncMiddleware {
 
     func respond(to request: Request, chainingTo next: any AsyncResponder) async throws -> Response {
         guard accessControl.isAuthorized(request) else {
-            throw Abort(.unauthorized, reason: "Missing or invalid Orchard access key.")
+            throw Abort(.unauthorized, reason: "缺少访问密钥或访问密钥无效。")
         }
         return try await next.respond(to: request)
     }

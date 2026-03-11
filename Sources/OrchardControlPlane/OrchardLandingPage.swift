@@ -4,17 +4,17 @@ enum OrchardLandingPage {
     static func response(showLogout: Bool = false) -> Response {
         let logoutHTML = showLogout ? """
         <form class="logout" method="post" action="/logout">
-          <button type="submit">Lock</button>
+          <button type="submit">锁定访问</button>
         </form>
         """ : ""
 
         let html = #"""
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Orchard Control Plane</title>
+  <title>Orchard 控制平面</title>
   <style>
     :root {
       color-scheme: light;
@@ -180,49 +180,49 @@ enum OrchardLandingPage {
 <body>
   <main>
     __LOGOUT__
-    <div class="badge">Orchard Control Plane</div>
-    <h1>Service is online.</h1>
+    <div class="badge">Orchard 控制平面</div>
+    <h1>服务已在线。</h1>
     <p>
-      This host exposes Orchard's API and agent session endpoints. It is not a browser console yet,
-      so the root page is only a lightweight status and routing surface.
+      当前主机提供 Orchard 的 API 与 Agent 会话入口。这里还不是完整的浏览器控制台，
+      所以根路径只展示一个轻量状态页和常用入口。
     </p>
 
     <section class="grid">
       <article class="card">
-        <h2>Primary use</h2>
-        <p>Accept agent registration, heartbeats, task dispatch, task logs, and stop requests.</p>
+        <h2>主要用途</h2>
+        <p>接收 Agent 注册、心跳、任务派发、任务日志与停止请求。</p>
       </article>
       <article class="card">
-        <h2>Agent base URL</h2>
+        <h2>Agent 接入地址</h2>
         <p><code>https://orchard.owenshen.top</code></p>
       </article>
       <article class="card">
-        <h2>Transport</h2>
-        <p>REST endpoints over HTTPS, plus WebSocket sessions for live agent communication.</p>
+        <h2>传输方式</h2>
+        <p>HTTPS 上的 REST 接口，以及用于实时 Agent 通信的 WebSocket 会话。</p>
       </article>
     </section>
 
     <ul>
       <li>
-        <span>Health check</span>
+        <span>健康检查</span>
         <a href="/health">/health</a>
       </li>
       <li>
-        <span>Registered devices</span>
+        <span>已注册设备</span>
         <a href="/api/devices">/api/devices</a>
       </li>
       <li>
-        <span>Task list</span>
+        <span>任务列表</span>
         <a href="/api/tasks">/api/tasks</a>
       </li>
       <li>
-        <span>Dashboard snapshot</span>
+        <span>控制台快照</span>
         <a href="/api/snapshot">/api/snapshot</a>
       </li>
     </ul>
 
     <p class="footnote">
-      If you want a browser-facing control UI here later, it needs a separate frontend deployment.
+      如果后续要在这里放浏览器控制台，还需要单独部署一个前端。
     </p>
   </main>
 </body>

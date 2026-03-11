@@ -10,9 +10,9 @@ public enum OrchardAPIError: Error, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .invalidURL:
-            return "Invalid server URL."
+            return "服务器地址无效。"
         case let .badResponse(status, body):
-            return "Server returned \(status): \(body)"
+            return "服务器返回 \(status)：\(body)"
         }
     }
 }
@@ -105,7 +105,7 @@ public struct OrchardAPIClient: @unchecked Sendable {
     private func send<Response: Decodable>(_ request: URLRequest) async throws -> Response {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
-            throw OrchardAPIError.badResponse(-1, "No HTTP response.")
+            throw OrchardAPIError.badResponse(-1, "未收到 HTTP 响应。")
         }
         guard (200 ..< 300).contains(http.statusCode) else {
             let body = String(decoding: data, as: UTF8.self)

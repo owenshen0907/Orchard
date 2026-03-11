@@ -21,7 +21,7 @@ final class OrchardControlPlaneTests: XCTestCase {
 
                 let body = res.body.getString(at: res.body.readerIndex, length: res.body.readableBytes)
                 XCTAssertNotNil(body)
-                XCTAssertTrue(body?.contains("Orchard Control Plane") == true)
+                XCTAssertTrue(body?.contains("Orchard 控制平面") == true)
                 XCTAssertTrue(body?.contains("/health") == true)
             })
         }
@@ -220,7 +220,7 @@ final class OrchardControlPlaneTests: XCTestCase {
             try await app.test(.GET, "/", afterResponse: { res async throws in
                 XCTAssertEqual(res.status, .ok)
                 let body = res.body.getString(at: res.body.readerIndex, length: res.body.readableBytes)
-                XCTAssertTrue(body?.contains("Enter access key.") == true)
+                XCTAssertTrue(body?.contains("请输入访问密钥。") == true)
             })
 
             try await app.test(.GET, "/api/snapshot", afterResponse: { res async throws in
@@ -242,7 +242,7 @@ final class OrchardControlPlaneTests: XCTestCase {
             }, afterResponse: { res async throws in
                 XCTAssertEqual(res.status, .ok)
                 let body = res.body.getString(at: res.body.readerIndex, length: res.body.readableBytes)
-                XCTAssertTrue(body?.contains("Orchard Control Plane") == true)
+                XCTAssertTrue(body?.contains("Orchard 控制平面") == true)
             })
 
             try await app.test(.GET, "/api/snapshot", beforeRequest: { req async throws in

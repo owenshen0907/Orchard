@@ -64,7 +64,7 @@ private func configureRoutes(
 
         let unlockRequest = try req.content.decode(OrchardUnlockRequest.self)
         guard unlockRequest.accessKey == accessControl.accessKey else {
-            return OrchardUnlockPage.response(status: .unauthorized, errorMessage: "The provided access key is invalid.")
+            return OrchardUnlockPage.response(status: .unauthorized, errorMessage: "访问密钥不正确。")
         }
 
         let response = req.redirect(to: "/")

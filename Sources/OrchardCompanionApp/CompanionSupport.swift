@@ -284,14 +284,14 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("连接") {
-                    TextField("Server URL", text: $serverURL)
+                    TextField("服务地址", text: $serverURL)
 #if os(iOS)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                         .autocorrectionDisabled()
 #endif
 
-                    SecureField("Access Key", text: $accessKey)
+                    SecureField("访问密钥", text: $accessKey)
 #if os(iOS)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()

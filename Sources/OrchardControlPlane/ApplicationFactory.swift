@@ -21,6 +21,7 @@ public func makeOrchardControlPlaneApplication(environment: Environment) async t
     app.databases.use(.sqlite(.file(databaseURL.path)), as: .sqlite)
     app.migrations.add(CreateDeviceTablesMigration())
     app.migrations.add(AddTaskLogSequenceMigration())
+    app.migrations.add(AddDeviceLocalStatusPageMigration())
     app.migrations.add(CreateManagedRunTablesMigration())
     try await app.autoMigrate()
     guard let sqlDatabase = app.db as? any SQLDatabase else {

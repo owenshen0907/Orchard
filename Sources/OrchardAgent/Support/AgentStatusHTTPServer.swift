@@ -5,15 +5,18 @@ import OrchardCore
 final class AgentStatusHTTPServer: @unchecked Sendable {
     private let options: AgentStatusOptions
     private let statusService: AgentStatusService
+    private let localActions: AgentStatusLocalActions?
     private let queue = DispatchQueue(label: "orchard.agent.status-http")
     private var listener: NWListener?
 
     init(
         options: AgentStatusOptions,
-        statusService: AgentStatusService = AgentStatusService()
+        statusService: AgentStatusService = AgentStatusService(),
+        localActions: AgentStatusLocalActions? = nil
     ) {
         self.options = options
         self.statusService = statusService
+        self.localActions = localActions
     }
 
     func run() async throws {
@@ -127,7 +130,10 @@ final class AgentStatusHTTPServer: @unchecked Sendable {
     private func buildGETResponse(for request: HTTPRequest) async -> HTTPResponse {
         switch request.path {
         case "/":
-            return .html(AgentStatusPageRenderer.render(options: options))
+            return .html(AgentStatusPageRenderer.render(
+                options: options,
+                localActionEnabled: localActions != nil
+            ))
         case "/api/status":
             var requestOptions = options
             if let remoteFlag = request.queryValue(named: "remote") {
@@ -164,16 +170,62 @@ final class AgentStatusHTTPServer: @unchecked Sendable {
         let components = request.pathComponents
 
         do {
+            if components.count == 2,
+               components[0] == "api",
+               components[1] == "local-managed-runs" {
+                guard let localActions else {
+                    throw NSError(domain: "AgentStatusHTTPServer", code: 2, userInfo: [
+                        NSLocalizedDescriptionKey: "当前状态页未接入运行中的 OrchardAgent，本机创建能力不可用。",
+                    ])
+                }
+                let created = try await localActions.createManagedRun(request.requiredLocalManagedRunRequest())
+                let payload = try OrchardJSON.encoder.encode(LocalActionResponse(
+                    ok: true,
+                    message: "已在宿主机发起本地任务",
+                    taskID: created.id
+                ))
+                return .json(payload)
+            }
+
             if components.count == 4,
                components[0] == "api",
                components[1] == "local-tasks",
                components[3] == "stop" {
                 let taskID = components[2]
+                if let localActions {
+                    try await localActions.stopTask(taskID)
+                    return .jsonMessage("已向宿主机发送停止指令")
+                }
                 _ = try await makeRemoteClient().stopTask(
                     taskID: taskID,
                     reason: "宿主本地状态页请求停止"
                 )
                 return .jsonMessage("已发送停止指令")
+            }
+
+            if components.count == 4,
+               components[0] == "api",
+               components[1] == "local-managed-runs" {
+                let taskID = components[2]
+                guard let localActions else {
+                    throw NSError(domain: "AgentStatusHTTPServer", code: 2, userInfo: [
+                        NSLocalizedDescriptionKey: "当前状态页未接入运行中的 OrchardAgent，本机控制能力不可用。",
+                    ])
+                }
+                switch components[3] {
+                case "continue":
+                    let prompt = try request.requiredPrompt()
+                    try await localActions.continueManagedTask(taskID, prompt)
+                    return .jsonMessage("已向宿主机发送继续指令")
+                case "interrupt":
+                    try await localActions.interruptManagedTask(taskID)
+                    return .jsonMessage("已向宿主机发送中断指令")
+                case "stop":
+                    try await localActions.stopTask(taskID)
+                    return .jsonMessage("已向宿主机发送停止指令")
+                default:
+                    break
+                }
             }
 
             if components.count == 4,
@@ -228,6 +280,12 @@ final class AgentStatusHTTPServer: @unchecked Sendable {
         } catch {
             return .jsonError(error.localizedDescription, statusCode: 400)
         }
+    }
+
+    private struct LocalActionResponse: Encodable {
+        let ok: Bool
+        let message: String
+        let taskID: String?
     }
 
     private func makeRemoteClient() throws -> OrchardAPIClient {
@@ -346,6 +404,33 @@ private struct HTTPRequest {
             ])
         }
         return prompt
+    }
+
+    func requiredLocalManagedRunRequest() throws -> AgentLocalManagedRunRequest {
+        let payload = try JSONDecoder().decode(AgentLocalManagedRunRequest.self, from: body)
+        let workspaceID = payload.workspaceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prompt = payload.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = payload.title?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let relativePath = payload.relativePath?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+
+        guard !workspaceID.isEmpty else {
+            throw NSError(domain: "AgentStatusHTTPServer", code: 4, userInfo: [
+                NSLocalizedDescriptionKey: "工作区不能为空。",
+            ])
+        }
+
+        guard !prompt.isEmpty else {
+            throw NSError(domain: "AgentStatusHTTPServer", code: 5, userInfo: [
+                NSLocalizedDescriptionKey: "任务说明不能为空。",
+            ])
+        }
+
+        return AgentLocalManagedRunRequest(
+            title: title,
+            workspaceID: workspaceID,
+            relativePath: relativePath,
+            prompt: prompt
+        )
     }
 
     static func expectedMessageLength(in data: Data) -> Int? {
@@ -472,12 +557,21 @@ private struct HTTPResponse {
 }
 
 enum AgentStatusPageRenderer {
-    static func render(options: AgentStatusOptions) -> String {
+    static func render(options: AgentStatusOptions, localActionEnabled: Bool = false) -> String {
         let checked = options.includeRemote ? "checked" : ""
-        let remoteActionStatus = options.accessKey?.nilIfEmpty == nil ? "未启用" : "已启用"
-        let remoteActionHint = options.accessKey?.nilIfEmpty == nil
-            ? "当前未配置访问密钥，本地页只能查看，不能继续/中断/停止远程任务。"
-            : "当前已配置访问密钥，本地页可以直接对控制面里的任务发继续 / 中断 / 停止指令。"
+        let limitOptions = [5, 8, 12, 20].map { value in
+            "<option value=\"\(value)\"\(value == options.limit ? " selected" : "")>\(value)</option>"
+        }.joined()
+        let remoteActionEnabled = options.accessKey?.nilIfEmpty != nil
+        let localActionStatus = localActionEnabled ? "已启用" : "只读"
+        let remoteActionStatus = remoteActionEnabled ? "已启用" : "未启用"
+        let localActionHint = localActionEnabled
+            ? "这就是宿主机真正在跑的控制台：可以直接发任务、补充说明、中断、终止，并实时看本地日志。"
+            : "当前页面只接了状态读取，没有接到运行中的 OrchardAgent 实例，所以现在只能观察，不能直接发任务或控制本地任务。"
+        let remoteActionHint = remoteActionEnabled
+            ? "如果你打开了控制面访问密钥，这个页面也能顺手对远程托管 run / Codex 会话发继续、中断、停止。"
+            : "没有配置访问密钥时，远程区块只做观察；先把宿主机这一层闭环跑通就够了。"
+
         return """
         <!doctype html>
         <html lang="zh-CN">
@@ -487,17 +581,18 @@ enum AgentStatusPageRenderer {
             <title>OrchardAgent 本地状态页</title>
             <style>
               :root {
-                --bg: #f4efe6;
-                --panel: rgba(255, 250, 242, 0.9);
-                --panel-strong: #fffaf2;
-                --ink: #1e1a17;
-                --muted: #6f645d;
+                --bg: #f5efe5;
+                --panel: rgba(255, 250, 242, 0.92);
+                --panel-strong: #fffaf3;
+                --ink: #1f1a17;
+                --muted: #6f655e;
                 --line: rgba(58, 44, 35, 0.12);
-                --accent: #117a65;
-                --accent-strong: #0a594b;
-                --warn: #b35c00;
-                --danger: #9d2d2d;
-                --shadow: 0 18px 50px rgba(71, 45, 28, 0.10);
+                --accent: #116f61;
+                --accent-strong: #0c574c;
+                --accent-soft: rgba(17, 111, 97, 0.10);
+                --warn: #a35a00;
+                --danger: #9a3131;
+                --shadow: 0 18px 48px rgba(71, 45, 28, 0.10);
               }
 
               * { box-sizing: border-box; }
@@ -508,72 +603,88 @@ enum AgentStatusPageRenderer {
                 font-family: "PingFang SC", "Noto Sans SC", sans-serif;
                 color: var(--ink);
                 background:
-                  radial-gradient(circle at top left, rgba(17, 122, 101, 0.16), transparent 32%),
-                  radial-gradient(circle at right 20%, rgba(179, 92, 0, 0.10), transparent 24%),
-                  linear-gradient(180deg, #f6f0e5 0%, #efe6d9 100%);
+                  radial-gradient(circle at top left, rgba(17, 111, 97, 0.16), transparent 30%),
+                  radial-gradient(circle at right 16%, rgba(163, 90, 0, 0.10), transparent 24%),
+                  linear-gradient(180deg, #f7f1e8 0%, #efe6d8 100%);
               }
 
               .shell {
-                width: min(1240px, calc(100vw - 24px));
-                margin: 20px auto 32px;
+                width: min(1280px, calc(100vw - 24px));
+                margin: 18px auto 32px;
               }
 
               .hero {
-                background: linear-gradient(135deg, rgba(15, 91, 78, 0.96), rgba(23, 52, 46, 0.92));
-                color: #f7f5ef;
-                padding: 22px 24px;
-                border-radius: 26px;
+                background: linear-gradient(135deg, rgba(15, 84, 74, 0.98), rgba(28, 49, 43, 0.94));
+                color: #f8f6ef;
+                padding: 24px;
+                border-radius: 28px;
                 box-shadow: var(--shadow);
               }
 
               .hero-top {
                 display: flex;
                 justify-content: space-between;
-                gap: 16px;
                 align-items: flex-start;
+                gap: 18px;
               }
 
               .eyebrow {
                 font-size: 12px;
-                letter-spacing: 0.16em;
+                letter-spacing: 0.18em;
                 text-transform: uppercase;
-                opacity: 0.72;
+                opacity: 0.74;
                 margin-bottom: 8px;
               }
 
               h1 {
                 margin: 0;
-                font-size: clamp(28px, 4vw, 42px);
+                font-size: clamp(28px, 4vw, 44px);
                 line-height: 1.02;
               }
 
               .hero p {
-                margin: 10px 0 0;
-                max-width: 780px;
-                line-height: 1.6;
-                color: rgba(247, 245, 239, 0.84);
+                margin: 12px 0 0;
+                max-width: 840px;
+                line-height: 1.68;
+                color: rgba(248, 246, 239, 0.88);
               }
 
               .hero-side {
                 display: grid;
-                gap: 6px;
+                gap: 8px;
+                min-width: 240px;
                 text-align: right;
                 font-size: 13px;
-                color: rgba(247, 245, 239, 0.78);
+                color: rgba(248, 246, 239, 0.80);
+              }
+
+              .hero-checklist {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                gap: 10px;
+                margin-top: 18px;
+              }
+
+              .hero-checklist div {
+                padding: 12px 14px;
+                border-radius: 16px;
+                background: rgba(255, 255, 255, 0.08);
+                line-height: 1.55;
+                font-size: 14px;
               }
 
               .toolbar {
                 display: flex;
                 flex-wrap: wrap;
+                justify-content: space-between;
                 gap: 12px;
                 align-items: center;
-                justify-content: space-between;
-                margin: 18px 0 16px;
+                margin: 16px 0;
                 padding: 14px 16px;
                 border-radius: 20px;
                 background: var(--panel);
-                box-shadow: var(--shadow);
                 border: 1px solid var(--line);
+                box-shadow: var(--shadow);
               }
 
               .toolbar-controls {
@@ -587,8 +698,8 @@ enum AgentStatusPageRenderer {
                 display: inline-flex;
                 align-items: center;
                 gap: 8px;
-                font-size: 14px;
                 color: var(--muted);
+                font-size: 14px;
               }
 
               .toggle input {
@@ -597,19 +708,34 @@ enum AgentStatusPageRenderer {
                 accent-color: var(--accent);
               }
 
+              .toggle select {
+                min-width: 92px;
+              }
+
+              button,
+              input,
+              textarea,
+              select {
+                font: inherit;
+              }
+
               button {
                 border: 0;
                 border-radius: 999px;
                 padding: 11px 16px;
                 background: var(--accent);
                 color: #fff;
-                font: inherit;
                 cursor: pointer;
               }
 
               button.secondary {
-                background: rgba(17, 122, 101, 0.12);
+                background: rgba(17, 111, 97, 0.12);
                 color: var(--accent-strong);
+              }
+
+              button[disabled] {
+                opacity: 0.5;
+                cursor: not-allowed;
               }
 
               .stamp {
@@ -639,7 +765,7 @@ enum AgentStatusPageRenderer {
               .metric-label {
                 color: var(--muted);
                 font-size: 13px;
-                margin-bottom: 10px;
+                margin-bottom: 8px;
               }
 
               .metric-value {
@@ -664,15 +790,94 @@ enum AgentStatusPageRenderer {
                 padding: 18px;
               }
 
+              .panel.feature {
+                grid-column: 1 / -1;
+              }
+
+              .split-head {
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 10px;
+                margin-bottom: 12px;
+              }
+
+              .panel-tag {
+                flex-shrink: 0;
+                padding: 6px 10px;
+                border-radius: 999px;
+                background: var(--accent-soft);
+                color: var(--accent-strong);
+                font-size: 12px;
+                font-weight: 700;
+              }
+
               .panel h2 {
-                margin: 0 0 10px;
+                margin: 0;
                 font-size: 20px;
               }
 
               .panel-subtitle {
+                margin-top: 6px;
                 color: var(--muted);
-                margin-bottom: 14px;
-                line-height: 1.5;
+                line-height: 1.58;
+              }
+
+              .form-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                gap: 12px;
+              }
+
+              .field {
+                display: grid;
+                gap: 8px;
+              }
+
+              .field-wide {
+                grid-column: 1 / -1;
+              }
+
+              .field span {
+                font-size: 13px;
+                color: var(--muted);
+              }
+
+              input,
+              textarea,
+              select {
+                width: 100%;
+                padding: 12px 14px;
+                border-radius: 14px;
+                border: 1px solid rgba(58, 44, 35, 0.12);
+                background: #fffdf9;
+                color: var(--ink);
+              }
+
+              textarea {
+                min-height: 118px;
+                resize: vertical;
+              }
+
+              fieldset {
+                margin: 0;
+                padding: 0;
+                border: 0;
+                min-width: 0;
+              }
+
+              .form-actions {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 12px;
+                align-items: center;
+                grid-column: 1 / -1;
+              }
+
+              .hint {
+                font-size: 13px;
+                color: var(--muted);
+                line-height: 1.55;
               }
 
               .item-list {
@@ -689,9 +894,9 @@ enum AgentStatusPageRenderer {
 
               .item-head {
                 display: flex;
+                justify-content: space-between;
                 gap: 10px;
                 align-items: flex-start;
-                justify-content: space-between;
                 margin-bottom: 8px;
               }
 
@@ -707,17 +912,17 @@ enum AgentStatusPageRenderer {
                 padding: 6px 10px;
                 font-size: 12px;
                 font-weight: 700;
-                background: rgba(17, 122, 101, 0.12);
+                background: var(--accent-soft);
                 color: var(--accent-strong);
               }
 
               .badge.warn {
-                background: rgba(179, 92, 0, 0.12);
+                background: rgba(163, 90, 0, 0.12);
                 color: var(--warn);
               }
 
               .badge.danger {
-                background: rgba(157, 45, 45, 0.12);
+                background: rgba(154, 49, 49, 0.12);
                 color: var(--danger);
               }
 
@@ -739,7 +944,7 @@ enum AgentStatusPageRenderer {
               .item p {
                 margin: 0;
                 color: var(--muted);
-                line-height: 1.55;
+                line-height: 1.58;
                 font-size: 14px;
               }
 
@@ -754,47 +959,54 @@ enum AgentStatusPageRenderer {
                 padding: 8px 12px;
                 border-radius: 999px;
                 border: 0;
+                background: rgba(17, 111, 97, 0.12);
+                color: var(--accent-strong);
                 font-size: 13px;
                 font-weight: 700;
                 cursor: pointer;
-                background: rgba(17, 122, 101, 0.12);
-                color: var(--accent-strong);
               }
 
               .action-button.secondary {
-                background: rgba(17, 122, 101, 0.08);
+                background: rgba(17, 111, 97, 0.08);
                 color: var(--muted);
               }
 
               .action-button.danger {
-                background: rgba(157, 45, 45, 0.12);
+                background: rgba(154, 49, 49, 0.12);
                 color: var(--danger);
               }
 
-              .action-button[disabled] {
-                opacity: 0.45;
-                cursor: not-allowed;
+              .log-preview {
+                margin-top: 10px;
+                padding: 10px 12px;
+                border-radius: 14px;
+                background: rgba(24, 22, 20, 0.92);
+                color: #efe8dc;
+                font-size: 12px;
+                line-height: 1.55;
+                white-space: pre-wrap;
+                word-break: break-word;
               }
 
               .empty {
                 padding: 16px;
                 border-radius: 16px;
-                background: rgba(17, 122, 101, 0.06);
+                background: rgba(17, 111, 97, 0.06);
                 color: var(--muted);
                 line-height: 1.6;
               }
 
               .notice {
-                margin-top: 14px;
+                margin-top: 12px;
                 padding: 12px 14px;
                 border-radius: 16px;
-                background: rgba(179, 92, 0, 0.10);
+                background: rgba(163, 90, 0, 0.10);
                 color: #7c470d;
-                line-height: 1.55;
+                line-height: 1.58;
               }
 
               .notice.error {
-                background: rgba(157, 45, 45, 0.10);
+                background: rgba(154, 49, 49, 0.10);
                 color: var(--danger);
               }
 
@@ -807,16 +1019,14 @@ enum AgentStatusPageRenderer {
               }
 
               @media (max-width: 760px) {
-                .hero-top {
+                .hero-top,
+                .split-head {
                   flex-direction: column;
                 }
 
                 .hero-side {
                   text-align: left;
-                }
-
-                .toolbar {
-                  align-items: flex-start;
+                  min-width: 0;
                 }
               }
             </style>
@@ -826,36 +1036,36 @@ enum AgentStatusPageRenderer {
               <section class="hero">
                 <div class="hero-top">
                   <div>
-                    <div class="eyebrow">Local Host Console</div>
-                    <h1>OrchardAgent 本地状态页</h1>
-                    <p>这里直接看宿主机本地执行中的任务、待回传更新、Codex 桌面活跃线程，以及控制面里指向本机的托管 run / 会话。</p>
+                    <div class="eyebrow">Host-First Console</div>
+                    <h1>先把宿主机闭环跑通</h1>
+                    <p>这页先解决最基础、也最关键的一层：直接在宿主机发 Codex 任务，实时观察执行和日志，在等待时补充说明，需要时中断或终止。等这层稳定后，Orchard 控制平面只需要复用同一条控制链路。</p>
                   </div>
                   <div class="hero-side">
                     <div>监听地址：http://\(escapeHTML(options.bindHost)):\(options.port)</div>
-                    <div>刷新方式：页面自动轮询</div>
-                    <div>接口：`/api/status`</div>
-                    <div>远程动作：\(remoteActionStatus)</div>
+                    <div>宿主机控制：\(escapeHTML(localActionStatus))</div>
+                    <div>远程动作：\(escapeHTML(remoteActionStatus))</div>
+                    <div>状态接口：`/api/status`</div>
                   </div>
                 </div>
-                <div class="notice\(options.accessKey?.nilIfEmpty == nil ? "" : "")" style="margin-top: 14px; background: rgba(255,255,255,0.08); color: rgba(247,245,239,0.88);">
-                  \(escapeHTML(remoteActionHint))
+                <div class="hero-checklist">
+                  <div><strong>1. 发任务</strong><br>直接在本机起一个 Codex managed run，不用先走控制面调度。</div>
+                  <div><strong>2. 观察</strong><br>同时看任务状态、最后回复、最近日志，确认执行是否真的活着。</div>
+                  <div><strong>3. 补充说明</strong><br>当任务等待输入时，在这里直接追问或补充要求。</div>
+                  <div><strong>4. 中断 / 终止</strong><br>区分“打断当前轮次”和“彻底停掉整个任务”，把恢复闭环坐实。</div>
                 </div>
+                <div class="notice" style="margin-top: 16px; background: rgba(255, 255, 255, 0.08); color: rgba(248, 246, 239, 0.90);">\(escapeHTML(localActionHint))</div>
+                <div class="notice" style="margin-top: 10px; background: rgba(255, 255, 255, 0.08); color: rgba(248, 246, 239, 0.90);">\(escapeHTML(remoteActionHint))</div>
               </section>
 
               <section class="toolbar">
                 <div class="toolbar-controls">
                   <label class="toggle">
                     <input type="checkbox" id="remote-toggle" \(checked)>
-                    <span>包含控制面视角</span>
+                    <span>顺便查看控制面视角</span>
                   </label>
                   <label class="toggle">
                     <span>列表上限</span>
-                    <select id="limit-select">
-                      <option value="5">5</option>
-                      <option value="8" selected>8</option>
-                      <option value="12">12</option>
-                      <option value="20">20</option>
-                    </select>
+                    <select id="limit-select">\(limitOptions)</select>
                   </label>
                   <button id="refresh-button">立即刷新</button>
                   <button id="copy-button" class="secondary">复制 JSON</button>
@@ -866,39 +1076,105 @@ enum AgentStatusPageRenderer {
               <section class="metrics" id="metrics"></section>
 
               <section class="grid">
+                <article class="panel feature">
+                  <div class="split-head">
+                    <div>
+                      <h2>1. 直接在宿主机发任务</h2>
+                      <div class="panel-subtitle">这里发起的任务会直接复用 OrchardAgent 的本地 managed controller。后面控制平面远端要做的，就是调用这同一层能力。</div>
+                    </div>
+                    <span class="panel-tag">本地直连</span>
+                  </div>
+                  <form id="local-create-form">
+                    <fieldset id="local-create-fieldset">
+                      <div class="form-grid">
+                        <label class="field">
+                          <span>任务标题（可选）</span>
+                          <input id="create-title" type="text" placeholder="不填就自动用提示词第一行">
+                        </label>
+                        <label class="field">
+                          <span>工作区</span>
+                          <select id="create-workspace">
+                            <option value="">等待状态刷新…</option>
+                          </select>
+                        </label>
+                        <label class="field field-wide">
+                          <span>相对路径（可选）</span>
+                          <input id="create-relative-path" type="text" placeholder="例如 Sources/OrchardAgent；留空就是工作区根目录">
+                        </label>
+                        <label class="field field-wide">
+                          <span>要 Codex 做什么</span>
+                          <textarea id="create-prompt" placeholder="例如：验证断网 / 断连接恢复闭环，并给出修复建议"></textarea>
+                        </label>
+                        <div class="form-actions">
+                          <button id="create-submit" type="submit">在宿主机发起任务</button>
+                          <span class="hint" id="create-hint">\(escapeHTML(localActionHint))</span>
+                        </div>
+                      </div>
+                    </fieldset>
+                  </form>
+                </article>
+
                 <article class="panel">
-                  <h2>本地活动任务</h2>
-                  <div class="panel-subtitle">直接来自宿主机运行目录与 `agent-state.json`，不依赖控制面是否显示正常。</div>
+                  <div class="split-head">
+                    <div>
+                      <h2>2. 观察本地任务</h2>
+                      <div class="panel-subtitle">这里是宿主机真实运行态：任务状态、最近一句回复、最后几行日志，都直接来自本地运行目录。</div>
+                    </div>
+                    <span class="panel-tag">最重要</span>
+                  </div>
                   <div id="local-tasks"></div>
                 </article>
 
                 <article class="panel">
-                  <h2>待回传更新</h2>
-                  <div class="panel-subtitle">如果 WebSocket 或上报链路抖动，这里会显示尚未同步到控制面的状态更新。</div>
+                  <div class="split-head">
+                    <div>
+                      <h2>3. 看上报是否卡住</h2>
+                      <div class="panel-subtitle">如果链路抖动、断网或断连接，这里会保留还没成功同步出去的更新，帮助验证自动恢复是否闭环。</div>
+                    </div>
+                    <span class="panel-tag">恢复观测</span>
+                  </div>
                   <div id="pending-updates"></div>
                 </article>
 
                 <article class="panel">
-                  <h2>远程托管运行</h2>
-                  <div class="panel-subtitle">控制面里已经分配给本机，或已指定本机但尚未接手的托管 run。</div>
+                  <div class="split-head">
+                    <div>
+                      <h2>4. 远程托管运行（次要）</h2>
+                      <div class="panel-subtitle">当宿主机这层已经稳定后，再来看控制面分配到本机的托管 run 是否能继续 / 中断 / 停止。</div>
+                    </div>
+                    <span class="panel-tag">控制面</span>
+                  </div>
                   <div id="remote-managed-runs"></div>
                 </article>
 
                 <article class="panel">
-                  <h2>远程 Codex 会话</h2>
-                  <div class="panel-subtitle">控制面从本机同步出来的 Codex 会话列表，可用来和本地桌面快照对照。</div>
+                  <div class="split-head">
+                    <div>
+                      <h2>5. 远程 Codex 会话（次要）</h2>
+                      <div class="panel-subtitle">这是控制面聚合出来的本机 Codex 会话，用来对照宿主机真实状态，确认远端观察是否跟得上。</div>
+                    </div>
+                    <span class="panel-tag">对照</span>
+                  </div>
                   <div id="remote-codex-sessions"></div>
                 </article>
               </section>
 
               <section class="panel" style="margin-top: 14px;">
-                <h2>原始 JSON</h2>
-                <div class="panel-subtitle">排查字段映射问题时，直接看原始返回最稳。</div>
+                <div class="split-head">
+                  <div>
+                    <h2>原始 JSON</h2>
+                    <div class="panel-subtitle">如果 UI 还是不够直观，就直接看原始数据；字段含义也能和后端返回一一对上。</div>
+                  </div>
+                  <span class="panel-tag">排障</span>
+                </div>
                 <pre id="raw-json">等待首次刷新…</pre>
               </section>
             </div>
 
             <script>
+              const hasLocalControl = \(localActionEnabled ? "true" : "false");
+              const hasRemoteActions = \(remoteActionEnabled ? "true" : "false");
+
               const stamp = document.getElementById('stamp');
               const metrics = document.getElementById('metrics');
               const localTasks = document.getElementById('local-tasks');
@@ -910,7 +1186,18 @@ enum AgentStatusPageRenderer {
               const copyButton = document.getElementById('copy-button');
               const remoteToggle = document.getElementById('remote-toggle');
               const limitSelect = document.getElementById('limit-select');
-              const hasRemoteActions = \(options.accessKey?.nilIfEmpty == nil ? "false" : "true");
+              const localCreateForm = document.getElementById('local-create-form');
+              const localCreateFieldset = document.getElementById('local-create-fieldset');
+              const createTitleInput = document.getElementById('create-title');
+              const createWorkspaceSelect = document.getElementById('create-workspace');
+              const createRelativePathInput = document.getElementById('create-relative-path');
+              const createPromptInput = document.getElementById('create-prompt');
+              const createHint = document.getElementById('create-hint');
+
+              localCreateFieldset.disabled = !hasLocalControl;
+              if (!hasLocalControl) {
+                createHint.textContent = '当前页面没有接到运行中的 OrchardAgent，所以现在只能观察，不能直接发本地任务。';
+              }
 
               let lastPayload = null;
 
@@ -937,6 +1224,20 @@ enum AgentStatusPageRenderer {
                 }).format(date);
               }
 
+              function normalizeRelativePath(value) {
+                const trimmed = String(value || '').trim();
+                if (!trimmed || trimmed === '.' || trimmed === './') return '';
+                return trimmed.replace(/^\\.\\//, '');
+              }
+
+              function defaultLocalTaskTitle(prompt) {
+                const firstLine = String(prompt || '')
+                  .split(/\r?\n/)
+                  .map((line) => line.trim())
+                  .find((line) => line.length > 0) || '新的本地 Codex 任务';
+                return firstLine.length <= 28 ? firstLine : `${firstLine.slice(0, 28)}...`;
+              }
+
               function metricCard(label, value, detail) {
                 return `
                   <article class="metric-card">
@@ -948,8 +1249,8 @@ enum AgentStatusPageRenderer {
               }
 
               function badgeClass(status) {
-                const danger = ['失败', '已取消'];
-                const warn = ['停止中', '中断中', '等待输入', '排队中'];
+                const danger = ['失败', '已取消', '已中断'];
+                const warn = ['等待输入', '停止中', '中断中', '排队中', '启动中'];
                 if (danger.includes(status)) return 'badge danger';
                 if (warn.includes(status)) return 'badge warn';
                 return 'badge';
@@ -962,21 +1263,77 @@ enum AgentStatusPageRenderer {
                 return `<div class="item-list">${items.map(renderItem).join('')}</div>`;
               }
 
-              function actionButton(label, action, attrs = {}, tone = '') {
+              function actionButton(label, action, attrs = {}, tone = '', enabled = true) {
                 const attributes = Object.entries(attrs)
                   .map(([key, value]) => `data-${key}="${escapeHTML(value)}"`)
                   .join(' ');
                 const toneClass = tone ? ` ${tone}` : '';
-                const disabled = hasRemoteActions ? '' : ' disabled';
+                const disabled = enabled ? '' : ' disabled';
                 return `<button class="action-button${toneClass}" data-action="${escapeHTML(action)}" ${attributes}${disabled}>${escapeHTML(label)}</button>`;
+              }
+
+              function populateWorkspaceOptions(workspaces) {
+                const items = Array.isArray(workspaces) ? workspaces : [];
+                const previous = createWorkspaceSelect.value;
+                if (!items.length) {
+                  createWorkspaceSelect.innerHTML = '<option value="">未检测到工作区</option>';
+                  return;
+                }
+
+                createWorkspaceSelect.innerHTML = items.map((workspace) => `
+                  <option value="${escapeHTML(workspace.id)}">${escapeHTML(workspace.name || workspace.id)} · ${escapeHTML(workspace.id)}</option>
+                `).join('');
+
+                const fallback = items[0].id;
+                createWorkspaceSelect.value = items.some((workspace) => workspace.id === previous) ? previous : fallback;
+              }
+
+              function canContinueLocalTask(task) {
+                return hasLocalControl
+                  && task?.task?.kind === 'codex'
+                  && task?.managedRunStatus === 'waitingInput'
+                  && Boolean(task?.task?.id);
+              }
+
+              function canInterruptLocalTask(task) {
+                return hasLocalControl
+                  && task?.task?.kind === 'codex'
+                  && ['running', 'waitingInput', 'interrupting'].includes(task?.managedRunStatus)
+                  && Boolean(task?.task?.id);
+              }
+
+              function canStopLocalTask(task) {
+                const status = task?.managedRunStatus || task?.task?.status;
+                return Boolean(task?.task?.id)
+                  && (hasLocalControl || hasRemoteActions)
+                  && status
+                  && !['succeeded', 'failed', 'interrupted', 'cancelled', 'stopRequested'].includes(status);
+              }
+
+              function localStopAction(task) {
+                if (task?.task?.kind === 'codex' && hasLocalControl) {
+                  return 'stop-local-managed';
+                }
+                return 'stop-local-task';
               }
 
               function renderLocalTask(task) {
                 const status = task.managedRunStatus ? statusTitleForManagedRun(task.managedRunStatus) : statusTitleForTask(task.task?.status);
                 const actions = [];
-                if (canStopLocalTask(task)) {
-                  actions.push(actionButton('停止', 'stop-local-task', { taskId: task.task?.id || '' }, 'danger'));
+                if (canContinueLocalTask(task)) {
+                  actions.push(actionButton('补充说明', 'continue-local-managed', { taskId: task.task?.id || '' }));
                 }
+                if (canInterruptLocalTask(task)) {
+                  actions.push(actionButton('中断', 'interrupt-local-managed', { taskId: task.task?.id || '' }, 'secondary'));
+                }
+                if (canStopLocalTask(task)) {
+                  actions.push(actionButton('终止', localStopAction(task), { taskId: task.task?.id || '' }, 'danger'));
+                }
+
+                const logPreview = Array.isArray(task.recentLogLines) && task.recentLogLines.length
+                  ? `<div class="log-preview">${escapeHTML(task.recentLogLines.join('\n'))}</div>`
+                  : '';
+
                 return `
                   <article class="item">
                     <div class="item-head">
@@ -986,18 +1343,19 @@ enum AgentStatusPageRenderer {
                     <div class="meta">
                       <span>${escapeHTML(task.task?.kind === 'codex' ? 'Codex' : 'Shell')}</span>
                       <span>${escapeHTML(task.task?.workspaceID || '—')}</span>
+                      <span>${escapeHTML(task.task?.relativePath || '工作区根目录')}</span>
                       ${task.pid ? `<span>PID ${escapeHTML(task.pid)}</span>` : ''}
                       ${task.codexThreadID ? `<span>线程 ${escapeHTML(task.codexThreadID)}</span>` : ''}
-                      ${task.task?.relativePath ? `<span>${escapeHTML(task.task.relativePath)}</span>` : '<span>工作区根目录</span>'}
                     </div>
                     <p>${escapeHTML(task.lastAssistantPreview || task.lastUserPrompt || task.cwd || task.runtimeWarning || '当前没有额外摘要。')}</p>
                     ${actions.length ? `<div class="item-actions">${actions.join('')}</div>` : ''}
+                    ${logPreview}
                   </article>
                 `;
               }
 
               function renderPendingUpdate(update) {
-                const status = statusTitleForTask(update.status);
+                const status = update.managedRunStatus ? statusTitleForManagedRun(update.managedRunStatus) : statusTitleForTask(update.status);
                 return `
                   <article class="item">
                     <div class="item-head">
@@ -1007,6 +1365,7 @@ enum AgentStatusPageRenderer {
                     <div class="meta">
                       ${update.exitCode !== null && update.exitCode !== undefined ? `<span>exit ${escapeHTML(update.exitCode)}</span>` : ''}
                       ${update.codexSessionID ? `<span>会话 ${escapeHTML(update.codexSessionID)}</span>` : ''}
+                      ${update.pid ? `<span>PID ${escapeHTML(update.pid)}</span>` : ''}
                     </div>
                     <p>${escapeHTML(update.summary || '没有摘要')}</p>
                   </article>
@@ -1017,13 +1376,13 @@ enum AgentStatusPageRenderer {
                 const status = statusTitleForManagedRun(run.status);
                 const actions = [];
                 if (canContinueManagedRun(run)) {
-                  actions.push(actionButton('继续', 'continue-managed-run', { runId: run.id }));
+                  actions.push(actionButton('继续', 'continue-managed-run', { runId: run.id }, '', hasRemoteActions));
                 }
                 if (canInterruptManagedRun(run)) {
-                  actions.push(actionButton('中断', 'interrupt-managed-run', { runId: run.id }, 'secondary'));
+                  actions.push(actionButton('中断', 'interrupt-managed-run', { runId: run.id }, 'secondary', hasRemoteActions));
                 }
                 if (canStopManagedRun(run)) {
-                  actions.push(actionButton('停止', 'stop-managed-run', { runId: run.id }, 'danger'));
+                  actions.push(actionButton('停止', 'stop-managed-run', { runId: run.id }, 'danger', hasRemoteActions));
                 }
                 return `
                   <article class="item">
@@ -1032,9 +1391,9 @@ enum AgentStatusPageRenderer {
                       <span class="${badgeClass(status)}">${escapeHTML(status)}</span>
                     </div>
                     <div class="meta">
-                      <span>${escapeHTML(run.workspaceID)}</span>
+                      <span>${escapeHTML(run.workspaceID || '—')}</span>
                       <span>${escapeHTML(run.relativePath || '工作区根目录')}</span>
-                      <span>${escapeHTML(run.deviceID || `待分配 -> ${run.preferredDeviceID || '未指定'}`)}</span>
+                      <span>${escapeHTML(run.deviceName || run.deviceID || run.preferredDeviceID || '未指定设备')}</span>
                     </div>
                     <p>${escapeHTML(run.summary || run.lastUserPrompt || run.cwd || '当前没有额外摘要。')}</p>
                     ${actions.length ? `<div class="item-actions">${actions.join('')}</div>` : ''}
@@ -1046,10 +1405,10 @@ enum AgentStatusPageRenderer {
                 const status = statusTitleForSession(session);
                 const actions = [];
                 if (canContinueSession(session)) {
-                  actions.push(actionButton('继续', 'continue-codex-session', { deviceId: session.deviceID, sessionId: session.id }));
+                  actions.push(actionButton('继续', 'continue-codex-session', { deviceId: session.deviceID, sessionId: session.id }, '', hasRemoteActions));
                 }
                 if (canInterruptSession(session)) {
-                  actions.push(actionButton('中断', 'interrupt-codex-session', { deviceId: session.deviceID, sessionId: session.id }, 'secondary'));
+                  actions.push(actionButton('中断', 'interrupt-codex-session', { deviceId: session.deviceID, sessionId: session.id }, 'secondary', hasRemoteActions));
                 }
                 return `
                   <article class="item">
@@ -1059,7 +1418,7 @@ enum AgentStatusPageRenderer {
                     </div>
                     <div class="meta">
                       <span>${escapeHTML(session.workspaceID || '未映射工作区')}</span>
-                      <span>${escapeHTML(session.cwd)}</span>
+                      <span>${escapeHTML(session.cwd || '—')}</span>
                     </div>
                     <p>${escapeHTML(session.lastAssistantMessage || session.lastUserMessage || session.preview || '当前没有额外摘要。')}</p>
                     ${actions.length ? `<div class="item-actions">${actions.join('')}</div>` : ''}
@@ -1067,18 +1426,12 @@ enum AgentStatusPageRenderer {
                 `;
               }
 
-              function canStopLocalTask(task) {
-                if (!hasRemoteActions) return false;
-                const status = task?.task?.status;
-                return Boolean(task?.task?.id) && status && !['succeeded', 'failed', 'cancelled', 'stopRequested'].includes(status);
-              }
-
               function canContinueManagedRun(run) {
                 return hasRemoteActions && run?.status === 'waitingInput' && Boolean(run?.codexSessionID);
               }
 
               function canInterruptManagedRun(run) {
-                return hasRemoteActions && ['running', 'waitingInput'].includes(run?.status) && Boolean(run?.codexSessionID);
+                return hasRemoteActions && ['running', 'waitingInput', 'interrupting'].includes(run?.status) && Boolean(run?.codexSessionID);
               }
 
               function canStopManagedRun(run) {
@@ -1122,33 +1475,34 @@ enum AgentStatusPageRenderer {
               }
 
               function statusTitleForSession(session) {
-                if (session.lastTurnStatus === 'inProgress' || session.state === 'running') return '推理中';
-                switch (session.state) {
+                if (session?.lastTurnStatus === 'inProgress' || session?.state === 'running') return '推理中';
+                switch (session?.state) {
                   case 'idle': return '待命';
                   case 'completed': return '已完成';
                   case 'failed': return '失败';
                   case 'interrupted': return '已中断';
-                  default: return session.state || '未知';
+                  default: return session?.state || '未知';
                 }
               }
 
               function renderMetrics(snapshot) {
                 const codexDesktop = snapshot.local?.metrics?.codexDesktop || {};
                 metrics.innerHTML = [
-                  metricCard('本地活动任务', snapshot.local?.activeTasks?.length || 0, '直接来自宿主机运行目录'),
-                  metricCard('待回传更新', snapshot.local?.pendingUpdates?.length || 0, '链路抖动时这里先可见'),
+                  metricCard('本地活动任务', snapshot.local?.activeTasks?.length || 0, '宿主机真实运行中的任务数'),
+                  metricCard('待回传更新', snapshot.local?.pendingUpdates?.length || 0, '断线时这里会先积压'),
                   metricCard('桌面活跃线程', codexDesktop.activeThreadCount ?? 0, '来自 Codex sentry 快照'),
-                  metricCard('进行中轮次', codexDesktop.inflightTurnCount ?? 0, '即使控制面未刷新也能看到'),
-                  metricCard('远程总运行中', snapshot.remote?.totalRunningCount ?? 0, snapshot.remote ? '托管 + 独立任务 + Codex 推理' : '未启用远程'),
-                  metricCard('远程托管运行', snapshot.remote?.runningManagedRunCount ?? 0, snapshot.remote ? '当前占槽 run' : '未启用远程'),
-                  metricCard('远程独立任务', snapshot.remote?.unmanagedRunningTaskCount ?? 0, snapshot.remote ? '直接走 /api/tasks' : '未启用远程'),
-                  metricCard('远程 Codex 推理', snapshot.remote?.observedRunningCodexCount ?? 0, snapshot.remote ? '会话 running + inflight 兜底' : '未启用远程')
+                  metricCard('进行中轮次', codexDesktop.inflightTurnCount ?? 0, '用于对照 UI 是否真在跑'),
+                  metricCard('远程总运行中', snapshot.remote?.totalRunningCount ?? 0, snapshot.remote ? '控制面看到的总运行量' : '当前未读取远程'),
+                  metricCard('远程托管运行', snapshot.remote?.runningManagedRunCount ?? 0, snapshot.remote ? '已占槽的托管 run' : '当前未读取远程'),
+                  metricCard('远程独立任务', snapshot.remote?.unmanagedRunningTaskCount ?? 0, snapshot.remote ? '非托管任务数量' : '当前未读取远程'),
+                  metricCard('远程 Codex 推理', snapshot.remote?.observedRunningCodexCount ?? 0, snapshot.remote ? '控制面观察到的推理数' : '当前未读取远程')
                 ].join('');
               }
 
               function renderSnapshot(snapshot) {
                 lastPayload = snapshot;
                 stamp.textContent = `${snapshot.deviceName} · ${snapshot.deviceID} · 最近刷新 ${formatDate(snapshot.generatedAt)}`;
+                populateWorkspaceOptions(snapshot.workspaces || []);
                 renderMetrics(snapshot);
 
                 localTasks.innerHTML = renderItemList(
@@ -1180,7 +1534,7 @@ enum AgentStatusPageRenderer {
                 }
 
                 if (snapshot.remote?.fetchError) {
-                  remoteManagedRuns.insertAdjacentHTML('beforeend', `<div class="notice">${escapeHTML(snapshot.remote.fetchError)}</div>`);
+                  remoteManagedRuns.insertAdjacentHTML('beforeend', `<div class="notice error">${escapeHTML(snapshot.remote.fetchError)}</div>`);
                 }
 
                 rawJSON.textContent = JSON.stringify(snapshot, null, 2);
@@ -1236,6 +1590,20 @@ enum AgentStatusPageRenderer {
 
                 try {
                   switch (action) {
+                    case 'continue-local-managed': {
+                      const prompt = window.prompt('补充说明', '');
+                      if (!prompt || !prompt.trim()) return;
+                      await postJSON(`/api/local-managed-runs/${encodeURIComponent(button.dataset.taskId)}/continue`, { prompt });
+                      break;
+                    }
+                    case 'interrupt-local-managed': {
+                      await postJSON(`/api/local-managed-runs/${encodeURIComponent(button.dataset.taskId)}/interrupt`);
+                      break;
+                    }
+                    case 'stop-local-managed': {
+                      await postJSON(`/api/local-managed-runs/${encodeURIComponent(button.dataset.taskId)}/stop`);
+                      break;
+                    }
                     case 'stop-local-task': {
                       await postJSON(`/api/local-tasks/${encodeURIComponent(button.dataset.taskId)}/stop`);
                       break;
@@ -1273,8 +1641,52 @@ enum AgentStatusPageRenderer {
                 } catch (error) {
                   stamp.textContent = `操作失败：${error.message || error}`;
                 } finally {
-                  button.disabled = !hasRemoteActions;
                   button.textContent = previousLabel;
+                  button.disabled = false;
+                }
+              });
+
+              localCreateForm.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                if (!hasLocalControl) return;
+
+                const prompt = createPromptInput.value.trim();
+                const workspaceID = createWorkspaceSelect.value;
+                const relativePath = normalizeRelativePath(createRelativePathInput.value);
+                const title = (createTitleInput.value.trim() || defaultLocalTaskTitle(prompt)).trim();
+
+                if (!workspaceID) {
+                  stamp.textContent = '请先选择工作区。';
+                  return;
+                }
+                if (!prompt) {
+                  stamp.textContent = '请先输入任务说明。';
+                  return;
+                }
+
+                const submitButton = document.getElementById('create-submit');
+                const previousLabel = submitButton.textContent;
+                submitButton.disabled = true;
+                submitButton.textContent = '发起中...';
+
+                try {
+                  createTitleInput.value = title;
+                  const payload = await postJSON('/api/local-managed-runs', {
+                    title,
+                    workspaceID,
+                    relativePath: relativePath || null,
+                    prompt
+                  });
+                  stamp.textContent = payload?.taskID
+                    ? `已在宿主机发起任务 ${payload.taskID}`
+                    : '已在宿主机发起任务';
+                  createPromptInput.value = '';
+                  await refreshSnapshot();
+                } catch (error) {
+                  stamp.textContent = `发起失败：${error.message || error}`;
+                } finally {
+                  submitButton.disabled = false;
+                  submitButton.textContent = previousLabel;
                 }
               });
 

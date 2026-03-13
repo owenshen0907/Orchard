@@ -103,6 +103,7 @@ final class AgentStatusTests: XCTestCase {
         XCTAssertEqual(snapshot.local.pendingUpdates.count, 1)
         XCTAssertEqual(snapshot.local.activeTasks.first?.codexThreadID, "thread-123")
         XCTAssertEqual(snapshot.local.activeTasks.first?.managedRunStatus, .waitingInput)
+        XCTAssertEqual(snapshot.local.activeTasks.first?.recentLogLines, ["hello"])
         XCTAssertEqual(snapshot.remoteSkippedReason, "已按参数跳过远程状态读取。")
 
         let rendered = try AgentStatusRenderer.render(snapshot, format: .text)
@@ -111,7 +112,7 @@ final class AgentStatusTests: XCTestCase {
         XCTAssertTrue(rendered.contains("待回传更新"))
     }
 
-    func testStatusPageRendererIncludesLocalAPIAndChineseSections() throws {
+    func testStatusPageRendererIncludesHostFirstLocalControlWhenAvailable() throws {
         let directory = try makeStatusTestDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -126,12 +127,35 @@ final class AgentStatusTests: XCTestCase {
             port: 5419
         )
 
-        let html = AgentStatusPageRenderer.render(options: options)
-        XCTAssertTrue(html.contains("OrchardAgent 本地状态页"))
+        let html = AgentStatusPageRenderer.render(options: options, localActionEnabled: true)
+        XCTAssertTrue(html.contains("先把宿主机闭环跑通"))
         XCTAssertTrue(html.contains("/api/status"))
-        XCTAssertTrue(html.contains("本地活动任务"))
-        XCTAssertTrue(html.contains("远程托管运行"))
+        XCTAssertTrue(html.contains("/api/local-managed-runs"))
+        XCTAssertTrue(html.contains("在宿主机发起任务"))
+        XCTAssertTrue(html.contains("观察本地任务"))
+        XCTAssertTrue(html.contains("远程托管运行（次要）"))
         XCTAssertTrue(html.contains("http://127.0.0.1:5419"))
+        XCTAssertTrue(html.contains("const hasLocalControl = true"))
+    }
+
+    func testStatusPageRendererExplainsReadOnlyModeWithoutLocalControl() throws {
+        let directory = try makeStatusTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let options = try AgentStatusOptions(
+            configURL: directory.appendingPathComponent("agent.json", isDirectory: false),
+            stateURL: directory.appendingPathComponent("agent-state.json", isDirectory: false),
+            tasksDirectoryURL: directory.appendingPathComponent("tasks", isDirectory: true),
+            outputFormat: .text,
+            includeRemote: false,
+            serve: true,
+            bindHost: "127.0.0.1",
+            port: 5419
+        )
+
+        let html = AgentStatusPageRenderer.render(options: options, localActionEnabled: false)
+        XCTAssertTrue(html.contains("只能观察"))
+        XCTAssertTrue(html.contains("const hasLocalControl = false"))
     }
 
     func testStatusRendererIncludesRemoteCombinedRunningBreakdown() throws {
@@ -229,6 +253,97 @@ final class AgentStatusTests: XCTestCase {
         runTask.cancel()
         _ = await runTask.result
     }
+
+    func testStatusHTTPServerRoutesLocalManagedActions() async throws {
+        let directory = try makeStatusTestDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let port = try makeAvailablePort()
+        let options = try AgentStatusOptions(
+            configURL: directory.appendingPathComponent("agent.json", isDirectory: false),
+            stateURL: directory.appendingPathComponent("agent-state.json", isDirectory: false),
+            tasksDirectoryURL: directory.appendingPathComponent("tasks", isDirectory: true),
+            outputFormat: .text,
+            includeRemote: false,
+            serve: true,
+            bindHost: "127.0.0.1",
+            port: port
+        )
+
+        let recorder = LocalActionRecorder()
+        let server = AgentStatusHTTPServer(
+            options: options,
+            localActions: AgentStatusLocalActions(
+                createManagedRun: { request in
+                    try await recorder.create(request)
+                },
+                continueManagedTask: { taskID, prompt in
+                    await recorder.recordContinue(taskID: taskID, prompt: prompt)
+                },
+                interruptManagedTask: { taskID in
+                    await recorder.recordInterrupt(taskID: taskID)
+                },
+                stopTask: { taskID in
+                    await recorder.recordStop(taskID: taskID)
+                }
+            )
+        )
+
+        let serverTask = Task {
+            try await server.run()
+        }
+        defer {
+            serverTask.cancel()
+        }
+
+        let baseURL = try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)"))
+        _ = try await waitForHTTPPayload(url: baseURL.appendingPathComponent("healthz"), timeout: 5)
+
+        let createResponse = try await performJSONRequest(
+            url: try XCTUnwrap(URL(string: "api/local-managed-runs", relativeTo: baseURL)),
+            method: "POST",
+            body: OrchardJSON.encoder.encode(AgentLocalManagedRunRequest(
+                title: "本地恢复验证",
+                workspaceID: "main",
+                relativePath: "Sources/OrchardAgent",
+                prompt: "验证断线恢复"
+            ))
+        )
+        XCTAssertEqual(createResponse.statusCode, 200)
+        let createPayload = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: createResponse.data) as? [String: Any]
+        )
+        XCTAssertEqual(createPayload["ok"] as? Bool, true)
+        XCTAssertEqual(createPayload["taskID"] as? String, "local-managed-task")
+
+        _ = try await performJSONRequest(
+            url: try XCTUnwrap(URL(string: "api/local-managed-runs/local-managed-task/continue", relativeTo: baseURL)),
+            method: "POST",
+            body: try JSONSerialization.data(withJSONObject: ["prompt": "继续执行"])
+        )
+        _ = try await performJSONRequest(
+            url: try XCTUnwrap(URL(string: "api/local-managed-runs/local-managed-task/interrupt", relativeTo: baseURL)),
+            method: "POST"
+        )
+        _ = try await performJSONRequest(
+            url: try XCTUnwrap(URL(string: "api/local-managed-runs/local-managed-task/stop", relativeTo: baseURL)),
+            method: "POST"
+        )
+
+        let snapshot = await recorder.snapshot()
+        XCTAssertEqual(snapshot.created.count, 1)
+        XCTAssertEqual(snapshot.created.first?.workspaceID, "main")
+        XCTAssertEqual(snapshot.created.first?.relativePath, "Sources/OrchardAgent")
+        XCTAssertEqual(snapshot.created.first?.prompt, "验证断线恢复")
+        XCTAssertEqual(snapshot.continued.count, 1)
+        XCTAssertEqual(snapshot.continued.first?.taskID, "local-managed-task")
+        XCTAssertEqual(snapshot.continued.first?.prompt, "继续执行")
+        XCTAssertEqual(snapshot.interrupted, ["local-managed-task"])
+        XCTAssertEqual(snapshot.stopped, ["local-managed-task"])
+
+        serverTask.cancel()
+        _ = await serverTask.result
+    }
 }
 
 private struct ManagedCodexRuntimeFixture: Codable {
@@ -244,6 +359,66 @@ private struct ManagedCodexRuntimeFixture: Codable {
     var lastManagedRunStatus: ManagedRunStatus?
     var lastUserPrompt: String?
     var lastAssistantPreview: String?
+}
+
+private struct LocalActionRecorderSnapshot: Sendable {
+    struct ContinuedPrompt: Sendable {
+        let taskID: String
+        let prompt: String
+    }
+
+    var created: [AgentLocalManagedRunRequest]
+    var continued: [ContinuedPrompt]
+    var interrupted: [String]
+    var stopped: [String]
+}
+
+private actor LocalActionRecorder {
+    private var created: [AgentLocalManagedRunRequest] = []
+    private var continued: [LocalActionRecorderSnapshot.ContinuedPrompt] = []
+    private var interrupted: [String] = []
+    private var stopped: [String] = []
+
+    func create(_ request: AgentLocalManagedRunRequest) throws -> TaskRecord {
+        created.append(request)
+        let now = Date(timeIntervalSince1970: 500)
+        return TaskRecord(
+            id: "local-managed-task",
+            title: request.title ?? "本地任务",
+            kind: .codex,
+            workspaceID: request.workspaceID,
+            relativePath: request.relativePath,
+            priority: .normal,
+            status: .running,
+            payload: .codex(CodexTaskPayload(prompt: request.prompt)),
+            preferredDeviceID: "device-local",
+            assignedDeviceID: "device-local",
+            createdAt: now,
+            updatedAt: now,
+            startedAt: now
+        )
+    }
+
+    func recordContinue(taskID: String, prompt: String) {
+        continued.append(.init(taskID: taskID, prompt: prompt))
+    }
+
+    func recordInterrupt(taskID: String) {
+        interrupted.append(taskID)
+    }
+
+    func recordStop(taskID: String) {
+        stopped.append(taskID)
+    }
+
+    func snapshot() -> LocalActionRecorderSnapshot {
+        LocalActionRecorderSnapshot(
+            created: created,
+            continued: continued,
+            interrupted: interrupted,
+            stopped: stopped
+        )
+    }
 }
 
 private func makeStatusTestDirectory() throws -> URL {
@@ -277,6 +452,23 @@ private func waitForHTTPPayload(url: URL, timeout: TimeInterval) async throws ->
     throw lastError ?? NSError(domain: "AgentStatusTests", code: 1, userInfo: [
         NSLocalizedDescriptionKey: "Timed out waiting for \(url.absoluteString)",
     ])
+}
+
+private func performJSONRequest(
+    url: URL,
+    method: String,
+    body: Data? = nil
+) async throws -> (statusCode: Int, data: Data) {
+    var request = URLRequest(url: url)
+    request.httpMethod = method
+    if let body {
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+    }
+
+    let (data, response) = try await URLSession.shared.data(for: request)
+    let http = try XCTUnwrap(response as? HTTPURLResponse)
+    return (http.statusCode, data)
 }
 
 private func makeAvailablePort() throws -> Int {

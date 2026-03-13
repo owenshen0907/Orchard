@@ -76,6 +76,28 @@ struct AddTaskLogSequenceMigration: AsyncMigration {
     }
 }
 
+struct AddDeviceLocalStatusPageMigration: AsyncMigration {
+    func prepare(on database: Database) async throws {
+        try await database.schema(DeviceModel.schema)
+            .field("local_status_page_host", .string)
+            .update()
+
+        try await database.schema(DeviceModel.schema)
+            .field("local_status_page_port", .int)
+            .update()
+    }
+
+    func revert(on database: Database) async throws {
+        try await database.schema(DeviceModel.schema)
+            .deleteField("local_status_page_host")
+            .update()
+
+        try await database.schema(DeviceModel.schema)
+            .deleteField("local_status_page_port")
+            .update()
+    }
+}
+
 struct CreateManagedRunTablesMigration: AsyncMigration {
     func prepare(on database: Database) async throws {
         try await database.schema(ManagedRunModel.schema)

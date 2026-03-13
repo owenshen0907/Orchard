@@ -14,6 +14,15 @@ private enum RunningTaskHandle {
             await controller.requestStop()
         }
     }
+
+    var managedCodexController: ManagedCodexTaskController? {
+        switch self {
+        case .process:
+            return nil
+        case let .codex(controller):
+            return controller
+        }
+    }
 }
 
 actor OrchardAgentService {
@@ -107,7 +116,9 @@ actor OrchardAgentService {
                 platform: .macOS,
                 capabilities: [.shell, .filesystem, .git, .codex],
                 maxParallelTasks: config.maxParallelTasks,
-                workspaces: config.workspaceRoots
+                workspaces: config.workspaceRoots,
+                localStatusPageHost: config.localStatusPageEnabled ? config.localStatusPageHost : nil,
+                localStatusPagePort: config.localStatusPageEnabled ? config.localStatusPagePort : nil
             )
         )
     }
@@ -494,7 +505,8 @@ actor OrchardAgentService {
         }
     }
 
-    private func startManagedCodexTask(_ task: TaskRecord, cwd: URL) async throws {
+    @discardableResult
+    private func startManagedCodexTask(_ task: TaskRecord, cwd: URL) async throws -> Bool {
         let controller = try ManagedCodexTaskController(
             task: task,
             runtimeDirectory: tasksDirectory.appendingPathComponent(task.id, isDirectory: true),
@@ -521,10 +533,109 @@ actor OrchardAgentService {
         try await stateStore.markTaskStarted(task.id)
         do {
             try await controller.start()
+            return true
         } catch {
             runningTasks.removeValue(forKey: task.id)
             try await sendTerminalUpdate(AgentTaskUpdatePayload(taskID: task.id, status: .failed, summary: String(describing: error)))
+            return false
         }
+    }
+
+    func createLocalManagedRun(_ request: AgentLocalManagedRunRequest) async throws -> TaskRecord {
+        guard runningTasks.count < config.maxParallelTasks else {
+            throw NSError(domain: "OrchardAgent", code: 31, userInfo: [
+                NSLocalizedDescriptionKey: "当前宿主机已达到并发上限，请先停止或等待已有任务结束。",
+            ])
+        }
+
+        let workspaceID = request.workspaceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let workspace = config.workspaceRoots.first(where: { $0.id == workspaceID }) else {
+            throw NSError(domain: "OrchardAgent", code: 32, userInfo: [
+                NSLocalizedDescriptionKey: "当前设备没有配置工作区 \(workspaceID)。",
+            ])
+        }
+
+        let trimmedRelativePath = request.relativePath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let relativePath = trimmedRelativePath.isEmpty ? nil : trimmedRelativePath
+        let prompt = request.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else {
+            throw NSError(domain: "OrchardAgent", code: 33, userInfo: [
+                NSLocalizedDescriptionKey: "任务说明不能为空。",
+            ])
+        }
+
+        let cwd = try OrchardWorkspacePath.resolve(rootPath: workspace.rootPath, relativePath: relativePath)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: cwd.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw NSError(domain: "OrchardAgent", code: 34, userInfo: [
+                NSLocalizedDescriptionKey: "工作目录不存在：\(cwd.path)",
+            ])
+        }
+
+        let trimmedTitle = request.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let title = (trimmedTitle.isEmpty ? nil : trimmedTitle)
+            ?? defaultLocalManagedTaskTitle(from: prompt)
+        let now = Date()
+        let task = TaskRecord(
+            id: UUID().uuidString.lowercased(),
+            title: title,
+            kind: .codex,
+            workspaceID: workspaceID,
+            relativePath: relativePath,
+            priority: .normal,
+            status: .running,
+            payload: .codex(CodexTaskPayload(prompt: prompt)),
+            preferredDeviceID: config.deviceID,
+            assignedDeviceID: config.deviceID,
+            createdAt: now,
+            updatedAt: now,
+            startedAt: now
+        )
+
+        let didStart = try await startManagedCodexTask(task, cwd: cwd)
+        guard didStart else {
+            throw NSError(domain: "OrchardAgent", code: 35, userInfo: [
+                NSLocalizedDescriptionKey: "本地任务启动失败，请查看待回传更新或本地日志。",
+            ])
+        }
+
+        return task
+    }
+
+    func continueLocalManagedTask(taskID: String, prompt: String) async throws {
+        let trimmedTaskID = taskID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPrompt.isEmpty else {
+            throw NSError(domain: "OrchardAgent", code: 36, userInfo: [
+                NSLocalizedDescriptionKey: "继续内容不能为空。",
+            ])
+        }
+        guard let controller = runningTasks[trimmedTaskID]?.managedCodexController else {
+            throw NSError(domain: "OrchardAgent", code: 37, userInfo: [
+                NSLocalizedDescriptionKey: "没有找到运行中的本地 Codex 任务：\(trimmedTaskID)",
+            ])
+        }
+        try await controller.continue(with: trimmedPrompt)
+    }
+
+    func interruptLocalManagedTask(taskID: String) async throws {
+        let trimmedTaskID = taskID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let controller = runningTasks[trimmedTaskID]?.managedCodexController else {
+            throw NSError(domain: "OrchardAgent", code: 38, userInfo: [
+                NSLocalizedDescriptionKey: "没有找到运行中的本地 Codex 任务：\(trimmedTaskID)",
+            ])
+        }
+        try await controller.requestInterrupt()
+    }
+
+    func stopLocalTask(taskID: String) async throws {
+        let trimmedTaskID = taskID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let handle = runningTasks[trimmedTaskID] else {
+            throw NSError(domain: "OrchardAgent", code: 39, userInfo: [
+                NSLocalizedDescriptionKey: "没有找到运行中的本地任务：\(trimmedTaskID)",
+            ])
+        }
+        await handle.requestStop()
     }
 
     private func nextBackoff(from current: UInt64) -> UInt64 {
@@ -557,7 +668,23 @@ actor OrchardAgentService {
         }
 
         do {
-            let server = AgentStatusHTTPServer(options: try makeLocalStatusPageOptions())
+            let server = AgentStatusHTTPServer(
+                options: try makeLocalStatusPageOptions(),
+                localActions: AgentStatusLocalActions(
+                    createManagedRun: { request in
+                        try await self.createLocalManagedRun(request)
+                    },
+                    continueManagedTask: { taskID, prompt in
+                        try await self.continueLocalManagedTask(taskID: taskID, prompt: prompt)
+                    },
+                    interruptManagedTask: { taskID in
+                        try await self.interruptLocalManagedTask(taskID: taskID)
+                    },
+                    stopTask: { taskID in
+                        try await self.stopLocalTask(taskID: taskID)
+                    }
+                )
+            )
             statusPageTask = Task {
                 do {
                     try await server.run()
@@ -588,5 +715,16 @@ actor OrchardAgentService {
             bindHost: config.localStatusPageHost,
             port: config.localStatusPagePort
         )
+    }
+
+    private func defaultLocalManagedTaskTitle(from prompt: String) -> String {
+        let firstLine = prompt
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? "新的本地 Codex 任务"
+        if firstLine.count <= 28 {
+            return firstLine
+        }
+        return String(firstLine.prefix(28)) + "..."
     }
 }

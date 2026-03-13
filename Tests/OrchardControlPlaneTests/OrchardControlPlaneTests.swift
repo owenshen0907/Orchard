@@ -22,24 +22,29 @@ final class OrchardControlPlaneTests: XCTestCase {
                 let body = res.body.getString(at: res.body.readerIndex, length: res.body.readableBytes)
                 XCTAssertNotNil(body)
                 XCTAssertTrue(body?.contains("Orchard 控制平面") == true)
-                XCTAssertTrue(body?.contains("浏览器控制台") == true)
-                XCTAssertTrue(body?.contains("新建托管 run") == true)
-                XCTAssertTrue(body?.contains("创建并排队") == true)
-                XCTAssertTrue(body?.contains("常用路径") == true)
+                XCTAssertTrue(body?.contains("远程任务控制台") == true)
+                XCTAssertTrue(body?.contains("第一次用？先这样走一遍") == true)
+                XCTAssertTrue(body?.contains("我现在想做什么") == true)
+                XCTAssertTrue(body?.contains("发起新任务") == true)
+                XCTAssertTrue(body?.contains("发起任务") == true)
+                XCTAssertTrue(body?.contains("别被这些字段吓到") == true)
+                XCTAssertTrue(body?.contains("真正必填只有 2 项") == true)
+                XCTAssertTrue(body?.contains("先选一个常用目录") == true)
                 XCTAssertTrue(body?.contains("筛选") == true)
-                XCTAssertTrue(body?.contains("远程指挥台") == true)
-                XCTAssertTrue(body?.contains("Codex 会话") == true)
-                XCTAssertTrue(body?.contains("只统计当前真的在推理或执行的项") == true)
-                XCTAssertTrue(body?.contains("Codex 轻摘要") == true)
-                XCTAssertTrue(body?.contains("桌面活跃线程") == true)
-                XCTAssertTrue(body?.contains("未映射线程") == true)
-                XCTAssertTrue(body?.contains("进行中轮次") == true)
-                XCTAssertTrue(body?.contains("独立任务") == true)
+                XCTAssertTrue(body?.contains("现在最需要处理") == true)
+                XCTAssertTrue(body?.contains("本机 Codex 对话") == true)
+                XCTAssertTrue(body?.contains("通过 Orchard 发起的任务") == true)
+                XCTAssertTrue(body?.contains("仅有简略摘要的对话") == true)
+                XCTAssertTrue(body?.contains("桌面活跃对话") == true)
+                XCTAssertTrue(body?.contains("尚未映射到控制面") == true)
+                XCTAssertTrue(body?.contains("进行中的回答轮次") == true)
+                XCTAssertTrue(body?.contains("兼容任务（旧接口）") == true)
                 XCTAssertTrue(body?.contains("诊断视图") == true)
                 XCTAssertTrue(body?.contains("设备级观测") == true)
                 XCTAssertTrue(body?.contains("继续追问") == true)
                 XCTAssertTrue(body?.contains("项目上下文") == true)
                 XCTAssertTrue(body?.contains("标准操作命令") == true)
+                XCTAssertTrue(body?.contains("宿主机控制台") == true)
                 XCTAssertTrue(body?.contains("/health") == true)
                 XCTAssertTrue(body?.contains("/api/codex/sessions") == true)
             })
@@ -408,13 +413,19 @@ final class OrchardControlPlaneTests: XCTestCase {
                 platform: .macOS,
                 capabilities: [.shell],
                 maxParallelTasks: 1,
-                workspaces: [WorkspaceDefinition(id: "workspace-a", name: "Workspace A", rootPath: "/tmp")]
+                workspaces: [WorkspaceDefinition(id: "workspace-a", name: "Workspace A", rootPath: "/tmp")],
+                localStatusPageHost: "127.0.0.1",
+                localStatusPagePort: 5419
             )
 
             try await app.test(.POST, "/api/agents/register", beforeRequest: { req async throws in
                 try req.content.encode(registration)
             }, afterResponse: { res async throws in
                 XCTAssertEqual(res.status, .ok)
+                XCTAssertContent(DeviceRecord.self, res) { device in
+                    XCTAssertEqual(device.localStatusPageHost, "127.0.0.1")
+                    XCTAssertEqual(device.localStatusPagePort, 5419)
+                }
             })
         }
     }

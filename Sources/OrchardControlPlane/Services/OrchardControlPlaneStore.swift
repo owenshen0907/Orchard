@@ -334,6 +334,10 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
         let now = Date()
         let sanitizedParallelism = min(max(request.maxParallelTasks, 1), 3)
         let workspaces = Dictionary(uniqueKeysWithValues: request.workspaces.map { ($0.id, $0) }).values.sorted { $0.id < $1.id }
+        let localStatusPageHost = {
+            let trimmed = request.localStatusPageHost?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }()
 
         try await db.transaction { transaction in
             if let device = try await DeviceModel.find(request.deviceID, on: transaction) {
@@ -342,6 +346,8 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
                 device.platform = request.platform
                 device.capabilities = request.capabilities
                 device.maxParallelTasks = sanitizedParallelism
+                device.localStatusPageHost = localStatusPageHost
+                device.localStatusPagePort = request.localStatusPagePort
                 device.lastSeenAt = now
                 try await device.update(on: transaction)
             } else {
@@ -354,7 +360,9 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
                     maxParallelTasks: sanitizedParallelism,
                     metrics: DeviceMetrics(),
                     registeredAt: now,
-                    lastSeenAt: now
+                    lastSeenAt: now,
+                    localStatusPageHost: localStatusPageHost,
+                    localStatusPagePort: request.localStatusPagePort
                 )
                 try await device.create(on: transaction)
             }

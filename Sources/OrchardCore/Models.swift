@@ -139,6 +139,8 @@ public struct AgentRegistrationRequest: Codable, Sendable {
     public var capabilities: [DeviceCapability]
     public var maxParallelTasks: Int
     public var workspaces: [WorkspaceDefinition]
+    public var localStatusPageHost: String?
+    public var localStatusPagePort: Int?
 
     public init(
         enrollmentToken: String,
@@ -148,7 +150,9 @@ public struct AgentRegistrationRequest: Codable, Sendable {
         platform: DevicePlatform = .macOS,
         capabilities: [DeviceCapability],
         maxParallelTasks: Int,
-        workspaces: [WorkspaceDefinition]
+        workspaces: [WorkspaceDefinition],
+        localStatusPageHost: String? = nil,
+        localStatusPagePort: Int? = nil
     ) {
         self.enrollmentToken = enrollmentToken
         self.deviceID = deviceID
@@ -158,6 +162,8 @@ public struct AgentRegistrationRequest: Codable, Sendable {
         self.capabilities = capabilities
         self.maxParallelTasks = maxParallelTasks
         self.workspaces = workspaces
+        self.localStatusPageHost = localStatusPageHost
+        self.localStatusPagePort = localStatusPagePort
     }
 }
 
@@ -175,6 +181,8 @@ public struct DeviceRecord: Codable, Identifiable, Sendable {
     public var runningTaskCount: Int
     public var registeredAt: Date
     public var lastSeenAt: Date
+    public var localStatusPageHost: String?
+    public var localStatusPagePort: Int?
 
     public init(
         deviceID: String,
@@ -188,7 +196,9 @@ public struct DeviceRecord: Codable, Identifiable, Sendable {
         metrics: DeviceMetrics,
         runningTaskCount: Int,
         registeredAt: Date,
-        lastSeenAt: Date
+        lastSeenAt: Date,
+        localStatusPageHost: String? = nil,
+        localStatusPagePort: Int? = nil
     ) {
         self.deviceID = deviceID
         self.name = name
@@ -202,6 +212,8 @@ public struct DeviceRecord: Codable, Identifiable, Sendable {
         self.runningTaskCount = runningTaskCount
         self.registeredAt = registeredAt
         self.lastSeenAt = lastSeenAt
+        self.localStatusPageHost = localStatusPageHost
+        self.localStatusPagePort = localStatusPagePort
     }
 }
 

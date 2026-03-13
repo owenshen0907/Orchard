@@ -32,6 +32,12 @@ final class DeviceModel: Model, @unchecked Sendable {
     @Field(key: "last_seen_at")
     var lastSeenAt: Date
 
+    @OptionalField(key: "local_status_page_host")
+    var localStatusPageHost: String?
+
+    @OptionalField(key: "local_status_page_port")
+    var localStatusPagePort: Int?
+
     init() {}
 
     init(
@@ -43,7 +49,9 @@ final class DeviceModel: Model, @unchecked Sendable {
         maxParallelTasks: Int,
         metrics: DeviceMetrics,
         registeredAt: Date,
-        lastSeenAt: Date
+        lastSeenAt: Date,
+        localStatusPageHost: String? = nil,
+        localStatusPagePort: Int? = nil
     ) throws {
         self.id = deviceID
         self.name = name
@@ -54,6 +62,8 @@ final class DeviceModel: Model, @unchecked Sendable {
         self.metricsJSON = try String(decoding: OrchardJSON.encoder.encode(metrics), as: UTF8.self)
         self.registeredAt = registeredAt
         self.lastSeenAt = lastSeenAt
+        self.localStatusPageHost = localStatusPageHost
+        self.localStatusPagePort = localStatusPagePort
     }
 
     var deviceID: String {
@@ -88,7 +98,9 @@ final class DeviceModel: Model, @unchecked Sendable {
             metrics: metrics,
             runningTaskCount: runningTaskCount,
             registeredAt: registeredAt,
-            lastSeenAt: lastSeenAt
+            lastSeenAt: lastSeenAt,
+            localStatusPageHost: localStatusPageHost,
+            localStatusPagePort: localStatusPagePort
         )
     }
 }

@@ -610,6 +610,36 @@ enum OrchardLandingPage {
       letter-spacing: 0.02em;
     }
 
+    .guide-grid {
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }
+
+    .guide-card {
+      display: grid;
+      gap: 12px;
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.82);
+    }
+
+    .guide-card h3 {
+      margin: 0;
+      font: 600 16px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+    }
+
+    .guide-card p {
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .guide-note {
+      color: var(--muted);
+      font: 500 12px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
     dialog {
       width: min(680px, calc(100vw - 24px));
       border: 1px solid var(--border);
@@ -687,75 +717,135 @@ enum OrchardLandingPage {
   <main>
     \#(logoutHTML)
     <div class="badge">Orchard 控制平面</div>
-    <h1>浏览器控制台</h1>
+    <h1>远程任务控制台</h1>
     <p class="intro">
-      这里把 Orchard 托管运行、独立 Orchard 任务和本机 Codex 会话放到同一张控制台里。
-      托管 run 仍然是系统真相；直接下发的独立任务会单独统计；外部 Codex 会话则作为实时观察与远程接续入口。
-      顶部“总运行中”仍然只统计当前真的在推理或执行的项；如果 Codex 会话桥暂时没精确命中，也会用桌面 inflight 线程数兜底。
+      你可以把这页先当成一个“远程遥控台”：发起任务、看进度、补一句继续、终止任务，都在这里完成。
+      如果你只是想验证主链路，优先看“发起新任务”“现在最需要处理”和右侧“详情与操作”这三块就够了。
+      页面里偶尔会出现 run / session 这些术语：你可以先简单理解为“通过 Orchard 发起的任务”和“宿主机上现有的 Codex 对话”。
+      如果你想核对宿主机真相，现在也可以从这页直接跳到对应电脑的“宿主机控制台”。
     </p>
 
     <nav class="nav">
-      <a href="#launch">新建运行</a>
+      <a href="#launch">发起任务</a>
+      <a href="#quickstart">怎么走一遍</a>
+      <a href="#guide">我现在想做什么</a>
       <a href="#filters">筛选</a>
-      <a href="#control">远程指挥台</a>
-      <a href="#runs">托管运行</a>
-      <a href="#tasks">独立任务</a>
-      <a href="#codex">Codex 会话</a>
-      <a href="#devices">设备</a>
-      <a href="#workspaces">工作区</a>
-      <a href="#links">接口</a>
+      <a href="#control">当前最需要处理</a>
+      <a href="#runs">Orchard 任务</a>
+      <a href="#tasks">兼容任务</a>
+      <a href="#codex">Codex 对话</a>
+      <a href="#devices">在线电脑</a>
+      <a href="#workspaces">项目目录</a>
+      <a href="#links">调试接口</a>
       <button type="button" id="refresh-button" class="primary">立即刷新</button>
     </nav>
 
     <div class="status-strip">
       <span class="status-pill" id="refresh-meta">等待首次渲染</span>
-      <span class="status-pill" id="codex-meta">Codex 会话待同步</span>
+      <span class="status-pill" id="codex-meta">Codex 对话待同步</span>
       <span class="status-pill">自动刷新 15 秒</span>
     </div>
 
     <div id="error-root"></div>
 
+    <div class="grid section-grid">
+      <section class="panel" id="quickstart">
+        <div class="section-header">
+          <h2>第一次用？先这样走一遍</h2>
+          <p>如果你只是想验证“发起任务 / 观察 / 追问 / 终止”，按下面 4 步走最省脑力。</p>
+        </div>
+        <div class="grid section-grid">
+          <article class="row">
+            <div class="row-title-group">
+              <span class="row-kicker">第 1 步</span>
+              <h3 class="row-title">发起一个任务</h3>
+            </div>
+            <p class="summary">去“发起新任务”，选项目和目录，写一句你想让 Codex 做什么，然后点“发起任务”。</p>
+          </article>
+          <article class="row">
+            <div class="row-title-group">
+              <span class="row-kicker">第 2 步</span>
+              <h3 class="row-title">看它有没有跑起来</h3>
+            </div>
+            <p class="summary">新任务会先出现在“现在最需要处理”，也会同步出现在“通过 Orchard 发起的任务”列表里。</p>
+          </article>
+          <article class="row">
+            <div class="row-title-group">
+              <span class="row-kicker">第 3 步</span>
+              <h3 class="row-title">继续追问或终止</h3>
+            </div>
+            <p class="summary">点开任务后，在右侧“详情与操作”里直接点“继续追问”“中断”或“停止”。</p>
+          </article>
+          <article class="row">
+            <div class="row-title-group">
+              <span class="row-kicker">第 4 步</span>
+              <h3 class="row-title">观察结果</h3>
+            </div>
+            <p class="summary">右侧会展示最近输入、状态变化和输出日志；如果要核对宿主机真相，就去“在线电脑”或详情卡片里打开“宿主机控制台”。</p>
+          </article>
+        </div>
+        <p class="footnote">名词先这样理解就行：Orchard 任务 = 你从这个页面发起的主链路；Codex 对话 = 宿主机上已经存在、可继续接上的桌面对话；兼容任务 = 旧接口任务。</p>
+      </section>
+
+      <section class="panel" id="guide">
+        <div class="section-header">
+          <h2>我现在想做什么</h2>
+          <p>不记字段和术语也没关系，直接按你的目的点；发起、观察、追问、终止、看宿主机真相都能从这里进。</p>
+        </div>
+        <div class="guide-grid" id="guide-root"></div>
+      </section>
+    </div>
+
     <section class="metrics" id="metrics-root">
-      <div class="empty"><strong>正在加载统计...</strong><p>浏览器正在整理当前设备、托管运行与 Codex 会话。</p></div>
+      <div class="empty"><strong>正在加载统计...</strong><p>浏览器正在整理当前在线电脑、任务和 Codex 对话。</p></div>
     </section>
 
     <div class="grid toolbar-grid">
       <section class="panel" id="launch">
         <div class="section-header">
-          <h2>新建托管 run</h2>
-          <p>直接从网页端把 Codex 托管任务排入本机调度队列。</p>
+          <h2>发起新任务</h2>
+          <p>这是最推荐的主链路：从网页端直接发给 Orchard，由在线电脑上的 Codex 接手执行。</p>
+        </div>
+        <div class="detail-card">
+          <h4>别被这些字段吓到</h4>
+          <p class="footnote">真正必填只有 2 项：在哪个项目里做、你想让 Codex 做什么。其余字段只是为了帮你更快锁定电脑、目录和后续追踪。</p>
+          <div class="detail-meta">
+            <span>任务名称 = 方便你自己认</span>
+            <span>执行电脑 = 不选就自动分配</span>
+            <span>具体目录 = 留空就是项目根目录</span>
+          </div>
         </div>
         <form id="create-run-form" class="stack">
           <div class="form-grid">
             <label class="field">
-              <span>标题（可留空）</span>
-              <input id="create-title-input" type="text" placeholder="不填则默认取提示词首句">
+              <span>任务名称（可不填）</span>
+              <input id="create-title-input" type="text" placeholder="不填就自动取你输入内容的前一句">
             </label>
             <label class="field">
-              <span>工作区</span>
+              <span>在哪个项目里做</span>
               <select id="create-workspace-select"></select>
             </label>
             <label class="field">
-              <span>指定设备（可选）</span>
+              <span>让哪台电脑执行（可不填）</span>
               <select id="create-device-select"></select>
             </label>
             <label class="field">
-              <span>常用路径</span>
+              <span>先选一个常用目录</span>
               <select id="create-relative-path-select"></select>
             </label>
             <label class="field">
-              <span>相对路径（可选）</span>
-              <input id="create-relative-path-input" type="text" placeholder="例如：Sources/OrchardControlPlane 或 mobile/app">
-              <small>先从列表里选一个常用目录；如果没有合适项，再直接改成你要的相对路径。</small>
+              <span>具体目录（可不填）</span>
+              <input id="create-relative-path-input" type="text" placeholder="例如：Sources/OrchardControlPlane；留空表示项目根目录">
+              <small>一般先选上面的常用目录；如果没有合适项，再改成你想要的目录。</small>
             </label>
             <label class="field span-2">
-              <span>提示词</span>
-              <textarea id="create-prompt-input" placeholder="例如：继续补齐 Codex 远程控制链路，并把网页端缺的创建入口和过滤能力一起做完。"></textarea>
+              <span>你想让 Codex 做什么</span>
+              <textarea id="create-prompt-input" placeholder="例如：继续把控制平面的发起 / 终止 / 追问链路补齐，并把页面文案改得更容易看懂。"></textarea>
             </label>
           </div>
           <div class="panel-actions">
-            <p class="panel-note" id="create-hint">driver 固定为 codexCLI，创建后会进入 Orchard 托管运行队列。</p>
-            <button type="submit" class="action-button primary" id="create-submit">创建并排队</button>
+            <p class="panel-note" id="create-hint">这会创建一条通过 Orchard 管理的 Codex 任务；后续你可以继续追问、停止或重试。</p>
+            <button type="submit" class="action-button primary" id="create-submit">发起任务</button>
           </div>
         </form>
       </section>
@@ -763,24 +853,24 @@ enum OrchardLandingPage {
       <section class="panel" id="filters">
         <div class="section-header">
           <h2>筛选</h2>
-          <p>快速聚焦正在跑、可继续或者某台设备上的会话。</p>
+          <p>快速只看某台电脑、某个项目，或者只看正在执行 / 等你处理的项。</p>
         </div>
         <div class="stack">
           <div class="form-grid">
             <label class="field span-2">
               <span>搜索</span>
-              <input id="filter-query-input" type="search" placeholder="按标题、摘要、设备、路径或工作区搜索">
+              <input id="filter-query-input" type="search" placeholder="按任务名、摘要、电脑名、目录或项目搜索">
             </label>
             <label class="field span-2">
-              <span>设备</span>
+              <span>电脑</span>
               <select id="filter-device-select"></select>
             </label>
           </div>
           <div class="toggle-row">
-            <label><input id="filter-running-only" type="checkbox">只看活跃项（运行中 / 等待继续 / 可接续）</label>
+            <label><input id="filter-running-only" type="checkbox">只看活跃项（正在执行 / 等你补一句 / 可继续）</label>
             <button type="button" class="action-button" id="filter-reset">清空筛选</button>
           </div>
-          <p class="footnote" id="filter-summary">当前展示全部运行与会话。</p>
+          <p class="footnote" id="filter-summary">当前展示全部任务和对话。</p>
         </div>
       </section>
     </div>
@@ -788,8 +878,8 @@ enum OrchardLandingPage {
     <div class="grid control-grid">
       <section class="panel" id="control">
         <div class="section-header">
-          <h2>远程指挥台</h2>
-          <p>把需要你立即判断和可直接下指令的项目排在一起。</p>
+          <h2>现在最需要处理</h2>
+          <p>把最值得你先看的任务和对话排在最前面，方便你直接继续、停止或排查。</p>
         </div>
         <div class="stack" id="control-root"></div>
       </section>
@@ -797,7 +887,7 @@ enum OrchardLandingPage {
       <aside class="panel detail-panel" id="detail">
         <div class="section-header">
           <h2>详情与操作</h2>
-          <p>查看时间线、日志，并从这里继续追问或中断。</p>
+          <p>这里能看最近输入、状态变化和日志，也能直接继续追问、中断或停止。</p>
         </div>
         <div id="detail-root"></div>
       </aside>
@@ -806,24 +896,24 @@ enum OrchardLandingPage {
     <div class="grid section-grid">
       <section class="panel" id="runs">
         <div class="section-header">
-          <h2>托管运行</h2>
-          <p>以 Orchard managed runs 为主口径；等待输入、运行中和失败项优先靠前。</p>
+          <h2>通过 Orchard 发起的任务</h2>
+          <p>这是最推荐的主链路；如果你要测试发起、观察、追问和终止，优先看这里。</p>
         </div>
         <div class="stack" id="runs-root"></div>
       </section>
 
       <section class="panel" id="tasks">
         <div class="section-header">
-          <h2>独立任务</h2>
-          <p>这里列出直接走 `/api/tasks` 的任务；已归属托管 run 的底层 task 会自动去重，不重复展示。</p>
+          <h2>兼容任务（旧接口）</h2>
+          <p>这是直接走 `/api/tasks` 的旧链路；除非你在测兼容行为，否则可以先忽略这一栏。</p>
         </div>
         <div class="stack" id="tasks-root"></div>
       </section>
 
       <section class="panel" id="codex">
         <div class="section-header">
-          <h2>Codex 会话</h2>
-          <p>这里展示桌面端实际存在的 Codex 线程，可继续追问、查看和尽力中断；待命线程会显示在这里，但不会计入“总运行中”，会话桥漏命中时则由桌面 inflight 线程数兜底。</p>
+          <h2>本机 Codex 对话</h2>
+          <p>这里展示宿主机桌面端实际存在的 Codex 对话，适合观察或继续接着问；主统计仍以上面的 Orchard 任务为准。</p>
         </div>
         <div class="stack">
           <div id="codex-diagnostics"></div>
@@ -835,34 +925,34 @@ enum OrchardLandingPage {
     <div class="grid section-grid">
       <section class="panel" id="devices">
         <div class="section-header">
-          <h2>在线设备</h2>
-          <p>按托管运行数、负载与最近心跳排序。</p>
+          <h2>在线电脑</h2>
+          <p>看现在有哪些电脑在线、负载如何、最近有没有心跳；如果这台机器公开了宿主机控制台，也会直接给你入口。</p>
         </div>
         <div class="stack" id="devices-root"></div>
       </section>
 
       <section class="panel" id="workspaces">
         <div class="section-header">
-          <h2>工作区</h2>
-          <p>汇总当前已注册设备上报的工作区范围。</p>
+          <h2>可执行的项目目录</h2>
+          <p>这里列出当前在线电脑已经上报、可以接任务的项目目录。</p>
         </div>
         <div class="stack" id="workspaces-root"></div>
       </section>
 
       <section class="panel" id="links">
         <div class="section-header">
-          <h2>常用接口</h2>
-          <p>适合调试、脚本调用和移动端接线。</p>
+          <h2>调试接口</h2>
+          <p>适合脚本调用、排查问题，或者和移动端 / 自动化接线。</p>
         </div>
         <div class="link-list">
           <a href="/health">健康检查 /health</a>
           <a href="/api/snapshot">控制台快照 /api/snapshot</a>
           <a href="/api/devices">设备列表 /api/devices</a>
-          <a href="/api/runs">托管运行 /api/runs</a>
-          <a href="/api/codex/sessions">Codex 会话 /api/codex/sessions</a>
+          <a href="/api/runs">Orchard 任务 /api/runs</a>
+          <a href="/api/codex/sessions">Codex 对话 /api/codex/sessions</a>
         </div>
         <p class="footnote">
-          现在网页端已经能直接查看明细、继续追问和中断。若某个会话来自外部桌面端，控制面会优先走 `/api/codex/sessions` 代理链路；若它是 Orchard 自托管 run，则优先走 `/api/runs/:id/*`。
+          如果你只想测主链路，优先用 `/api/runs`；`/api/codex/sessions` 更适合观察宿主机桌面上已经存在的 Codex 对话。
         </p>
       </section>
     </div>
@@ -871,7 +961,7 @@ enum OrchardLandingPage {
   <dialog id="prompt-dialog">
     <form method="dialog" class="dialog-shell" id="prompt-form">
       <h3 id="prompt-title">继续追问</h3>
-      <p class="dialog-hint" id="prompt-hint">输入要继续交给本机 Codex 的内容。</p>
+      <p class="dialog-hint" id="prompt-hint">把下一句发给当前任务或对话。</p>
       <textarea id="prompt-input" class="prompt-box" placeholder="例如：继续把移动端的远程控制链路补齐，并把关键接口说明写清楚。"></textarea>
       <div id="prompt-project-context" class="prompt-project-context"></div>
       <div class="dialog-actions">
@@ -908,6 +998,7 @@ enum OrchardLandingPage {
       const refreshButton = document.getElementById('refresh-button');
       const metricsRoot = document.getElementById('metrics-root');
       const controlRoot = document.getElementById('control-root');
+      const guideRoot = document.getElementById('guide-root');
       const runsRoot = document.getElementById('runs-root');
       const tasksRoot = document.getElementById('tasks-root');
       const codexRoot = document.getElementById('codex-root');
@@ -1274,7 +1365,9 @@ enum OrchardLandingPage {
               metrics: {},
               runningTaskCount: 0,
               registeredAt: null,
-              lastSeenAt: session.updatedAt || null
+              lastSeenAt: session.updatedAt || null,
+              localStatusPageHost: null,
+              localStatusPagePort: null
             });
           }
         }
@@ -1315,6 +1408,39 @@ enum OrchardLandingPage {
       function deviceLabel(device) {
         const status = device?.status === 'online' ? '在线' : device?.status === 'offline' ? '离线' : '未知';
         return `${device?.name || device?.deviceID || '未知设备'} · ${status}`;
+      }
+
+      function deviceByID(deviceID) {
+        return allKnownDevices().find((device) => device.deviceID === deviceID) || null;
+      }
+
+      function deviceLocalConsoleInfo(device) {
+        if (!device) return null;
+        const rawHost = String(device.localStatusPageHost || '').trim();
+        const port = Number(device.localStatusPagePort || 0);
+        if (!rawHost || !Number.isFinite(port) || port <= 0) return null;
+
+        let host = rawHost;
+        let note = '如果浏览器能访问这台宿主机，可以直接打开这个地址。';
+        if (host === '0.0.0.0' || host === '::') {
+          host = String(device.hostName || '').trim();
+          if (!host) return null;
+          note = '状态页监听的是全部网卡地址；如果当前浏览器能访问这台宿主机，就可以直接打开。';
+        } else if (host === '127.0.0.1' || host === 'localhost' || host === '::1') {
+          note = '这个地址只适合在宿主机本机浏览器打开；如果你是远端看控制平面，需要切到那台机器上打开。';
+        }
+
+        return {
+          url: `http://${host}:${port}`,
+          note
+        };
+      }
+
+      function hostConsoleLink(deviceID, label = '打开宿主机控制台', tone = '') {
+        const info = deviceLocalConsoleInfo(deviceByID(deviceID));
+        if (!info) return '';
+        const toneClass = tone ? ` ${tone}` : '';
+        return `<a class="action-button${toneClass}" href="${escapeHTML(info.url)}" target="_blank" rel="noreferrer">${escapeHTML(label)}</a>`;
       }
 
       function filterDeviceOptions() {
@@ -1411,13 +1537,13 @@ enum OrchardLandingPage {
 
         for (const run of state.snapshot.managedRuns || []) {
           if (run.workspaceID !== workspaceID) continue;
-          addRelativePathCandidate(bucket, run.relativePath, '托管 run', 1.3);
-          addRelativePathCandidate(bucket, relativePathFromWorkspaceRoot(workspace.rootPath, run.cwd), '托管 run', 1);
+          addRelativePathCandidate(bucket, run.relativePath, 'Orchard 任务', 1.3);
+          addRelativePathCandidate(bucket, relativePathFromWorkspaceRoot(workspace.rootPath, run.cwd), 'Orchard 任务', 1);
         }
 
         for (const session of state.codexSessions || []) {
           if (session.workspaceID !== workspaceID) continue;
-          addRelativePathCandidate(bucket, relativePathFromWorkspaceRoot(workspace.rootPath, session.cwd), 'Codex 会话', 1.1);
+          addRelativePathCandidate(bucket, relativePathFromWorkspaceRoot(workspace.rootPath, session.cwd), 'Codex 对话', 1.1);
         }
 
         return [...bucket.values()]
@@ -1478,7 +1604,7 @@ enum OrchardLandingPage {
       }
 
       function defaultRunTitle(prompt) {
-        const firstLine = String(prompt || '').split('\n').map((line) => line.trim()).find(Boolean) || '新的托管 run';
+        const firstLine = String(prompt || '').split('\n').map((line) => line.trim()).find(Boolean) || '新的 Orchard 任务';
         return firstLine.length > 36 ? `${firstLine.slice(0, 36)}...` : firstLine;
       }
 
@@ -1492,12 +1618,12 @@ enum OrchardLandingPage {
         const workspace = selectedWorkspaceRecord();
         const relativePath = normalizeRelativePath(createRelativePathInput.value);
         if (!workspace) {
-          createHint.textContent = '当前没有上报 Codex 能力的工作区，暂时不能从网页端新建托管 run。';
+          createHint.textContent = '当前还没有可执行 Codex 的项目目录；先确认 Agent 已连接控制面并上报工作区。';
           return;
         }
         const cwd = joinedPath(workspace.rootPath, relativePath);
         const onlineCount = workspace.onlineCount ? `，当前在线 ${workspace.onlineCount} 台` : '，当前在线设备 0 台';
-        createHint.textContent = `driver 固定为 codexCLI；预计工作目录：${cwd}${onlineCount}。`;
+        createHint.textContent = `预计会在 ${cwd} 执行${onlineCount}；如果不指定电脑，控制面会自动挑一台在线设备。`;
       }
 
       function updateToolbarControls() {
@@ -1631,7 +1757,7 @@ enum OrchardLandingPage {
         const turnSummary = summarizeCounts(sessions.map((session) => codexLastTurnLabel(session)));
         let conclusion = '还没有从 Agent 读到可展示的会话。';
         if (metrics.desktopCodexLiveGap > 0) {
-          conclusion = `桌面端实时快照显示 ${metrics.desktopCodexActiveThreads} 个活跃线程、${metrics.desktopCodexInflightTurns} 个进行中轮次，当前至少观测到 ${metrics.observedRunningCodex} 个推理中线程；但会话桥只精确映射出 ${running} 个 running 会话，仍有 ${metrics.desktopCodexLiveGap} 个线程只能先做设备级观测。`;
+          conclusion = `桌面端实时快照显示 ${metrics.desktopCodexActiveThreads} 个活跃对话、${metrics.desktopCodexInflightTurns} 个进行中轮次，当前至少观测到 ${metrics.observedRunningCodex} 个执行中线程；但会话桥只精确映射出 ${running} 个执行中的对话，仍有 ${metrics.desktopCodexLiveGap} 个线程只能先做设备级观测。`;
         } else if (metrics.observedRunningCodex > 0) {
           conclusion = running > 0
             ? '当前存在真正推理中的线程，顶部“总运行中”会把这些线程算进去。'
@@ -1644,7 +1770,7 @@ enum OrchardLandingPage {
           conclusion = '当前列表以已结束线程为主，适合复盘或继续追问。';
         }
         return {
-          summary: `当前共 ${sessions.length} 个 Codex 会话：会话推理中 ${running}，设备观测推理中 ${metrics.observedRunningCodex}，待命 ${standby}，已结束 ${finished}；桌面端活跃线程 ${metrics.desktopCodexActiveThreads}，进行中轮次 ${metrics.desktopCodexInflightTurns}。`,
+          summary: `当前共 ${sessions.length} 个 Codex 对话：对话里显示执行中 ${running}，设备侧观测执行中 ${metrics.observedRunningCodex}，待命 ${standby}，已结束 ${finished}；桌面端活跃对话 ${metrics.desktopCodexActiveThreads}，进行中回答轮次 ${metrics.desktopCodexInflightTurns}。`,
           sourceSummary,
           turnSummary,
           conclusion
@@ -1811,8 +1937,8 @@ enum OrchardLandingPage {
         }
         if (state.filters.runningOnly) notes.push('只看活跃项');
         filterSummary.textContent = notes.length
-          ? `当前筛选：${notes.join('，')}；展示 ${managedCount} 个托管 run、${taskCount} 个独立任务、${codexCount} 个 Codex 会话（其中推理中 ${codexRunningCount}，待命 ${codexStandbyCount}）。`
-          : `当前展示全部运行与会话，共 ${managedCount} 个托管 run、${taskCount} 个独立任务、${codexCount} 个 Codex 会话（其中推理中 ${codexRunningCount}，待命 ${codexStandbyCount}）。`;
+          ? `当前筛选：${notes.join('，')}；展示 ${managedCount} 个 Orchard 任务、${taskCount} 个兼容任务、${codexCount} 个 Codex 对话（其中执行中 ${codexRunningCount}，待命 ${codexStandbyCount}）。`
+          : `当前展示全部内容，共 ${managedCount} 个 Orchard 任务、${taskCount} 个兼容任务、${codexCount} 个 Codex 对话（其中执行中 ${codexRunningCount}，待命 ${codexStandbyCount}）。`;
       }
 
       function managedSummary(run) {
@@ -2144,7 +2270,7 @@ enum OrchardLandingPage {
           return '';
         }
         const mappedRunning = mappedRunningCodexSessionsForDevice(device?.deviceID);
-        return `仍有 ${gap} 个活跃线程只做设备级观测；当前仅精确映射出 ${mappedRunning} 个 running 会话。`;
+        return `仍有 ${gap} 个活跃线程只做设备级观测；当前仅精确映射出 ${mappedRunning} 个执行中的对话。`;
       }
 
       function deviceCodexSummary(device) {
@@ -2198,21 +2324,101 @@ enum OrchardLandingPage {
         };
       }
 
+      function prioritizedControlItems(limit = 8) {
+        const managed = filteredManagedRuns().sort(compareManagedRuns).slice(0, 5).map((run) => ({ type: 'managed', rank: managedAttentionRank(run.status), run }));
+        const tasks = filteredIndependentTasks().sort(compareTasks).slice(0, 5).map((task) => ({ type: 'task', rank: taskAttentionRank(task), task }));
+        const codex = filteredCodexSessions().sort(compareCodexSessions).slice(0, 5).map((session) => ({ type: 'codex', rank: codexAttentionRank(session), session }));
+        return [...managed, ...tasks, ...codex]
+          .sort((lhs, rhs) => lhs.rank - rhs.rank || (rhs.run?.updatedAt || rhs.task?.updatedAt || rhs.session?.updatedAt).localeCompare(lhs.run?.updatedAt || lhs.task?.updatedAt || lhs.session?.updatedAt || ''))
+          .slice(0, limit);
+      }
+
+      function guideTargetTitle(target) {
+        if (!target) return '';
+        if (target.type === 'managed') return target.run?.title || target.run?.id || '当前 Orchard 任务';
+        if (target.type === 'task') return target.task?.title || target.task?.id || '当前兼容任务';
+        return target.session?.name || target.session?.preview || target.session?.id || '当前 Codex 对话';
+      }
+
+      function guideTargetSummary(target) {
+        if (!target) return '';
+        if (target.type === 'managed') return managedSummary(target.run);
+        if (target.type === 'task') return taskSummary(target.task);
+        return codexSummary(target.session);
+      }
+
+      function guideTargetDeviceID(target) {
+        if (!target) return '';
+        if (target.type === 'managed') return target.run?.deviceID || '';
+        if (target.type === 'task') return target.task?.assignedDeviceID || '';
+        return target.session?.deviceID || '';
+      }
+
+      function selectedDeviceID() {
+        if (!state.selected) return '';
+        if (state.selected.type === 'managed') {
+          return state.detailType === 'managed'
+            ? state.detail?.run?.deviceID || ''
+            : managedRunByID(state.selected.runID)?.deviceID || '';
+        }
+        if (state.selected.type === 'task') {
+          return state.detailType === 'task'
+            ? state.detail?.task?.assignedDeviceID || ''
+            : independentTaskByID(state.selected.taskID)?.assignedDeviceID || '';
+        }
+        return state.selected.deviceID || '';
+      }
+
+      function topObserveTarget() {
+        return prioritizedControlItems(1)[0] || null;
+      }
+
+      function topContinueTarget() {
+        const run = filteredManagedRuns().sort(compareManagedRuns).find((item) => canContinueManaged(item));
+        if (run) return { type: 'managed', run };
+        const session = filteredCodexSessions().sort(compareCodexSessions).find((item) => isCodexStandby(item));
+        if (session) return { type: 'codex', session };
+        return null;
+      }
+
+      function topStopTarget() {
+        const run = filteredManagedRuns().sort(compareManagedRuns).find((item) => canInterruptManaged(item) || canStopManaged(item));
+        if (run) return { type: 'managed', run };
+        const task = filteredIndependentTasks().sort(compareTasks).find((item) => canStopTask(item));
+        if (task) return { type: 'task', task };
+        const session = filteredCodexSessions().sort(compareCodexSessions).find((item) => isCodexRunning(item));
+        if (session) return { type: 'codex', session };
+        return null;
+      }
+
+      function preferredHostConsoleDevice() {
+        const selectedDevice = deviceByID(selectedDeviceID());
+        if (deviceLocalConsoleInfo(selectedDevice)) return selectedDevice;
+
+        const observeTarget = topObserveTarget();
+        const observeDevice = deviceByID(guideTargetDeviceID(observeTarget));
+        if (deviceLocalConsoleInfo(observeDevice)) return observeDevice;
+
+        return (state.snapshot.devices || [])
+          .filter((device) => device.status === 'online')
+          .find((device) => deviceLocalConsoleInfo(device)) || null;
+      }
+
       function renderMetrics() {
         const metrics = currentMetrics();
         const cards = [
-          ['在线设备', metrics.onlineDevices, '当前可接收任务的机器', 'green'],
-          ['总运行中', metrics.combined, '托管运行 + 独立任务 + Codex 会话/桌面 inflight 兜底', 'blue'],
-          ['托管运行', metrics.runningManaged, '由 Orchard 直接托管的执行链路', 'blue'],
-          ['独立任务', metrics.unmanagedTasks, '直接走 /api/tasks，未归属托管 run', 'gold'],
-          ['Codex 推理中', metrics.observedRunningCodex, '会话 running + 桌面 inflight 线程兜底', 'blue'],
-          ['桌面活跃线程', metrics.desktopCodexActiveThreads, '直接来自 Codex 桌面 app_state 快照', 'blue'],
-          ['未映射线程', metrics.desktopCodexLiveGap, '桌面端活跃，但会话桥尚未精确命中', 'red'],
-          ['Codex 待命', metrics.standbyCodex, '当前未在推理，但还保留上下文的线程', 'gold'],
-          ['进行中轮次', metrics.desktopCodexInflightTurns, '即使会话桥未精确映射，也会在设备级实时显示', 'gold'],
-          ['Codex 轻摘要', metrics.lightweightCodex, '仅拿到列表摘要，打开详情会再补轮次', 'gold'],
-          ['等待继续', metrics.waitingInput, '这些 run 正等你补一句话', 'gold'],
-          ['失败运行', metrics.failedManaged, '建议优先打开日志和时间线', 'red']
+          ['在线电脑', metrics.onlineDevices, '当前可接收任务的机器', 'green'],
+          ['现在正在执行', metrics.combined, 'Orchard 任务 + 兼容任务 + Codex 对话综合统计', 'blue'],
+          ['Orchard 任务', metrics.runningManaged, '你从这个页面发起的主链路任务', 'blue'],
+          ['兼容任务', metrics.unmanagedTasks, '旧接口 /api/tasks 下发的任务', 'gold'],
+          ['Codex 正在执行', metrics.observedRunningCodex, '对话 running + 桌面进行中线程兜底', 'blue'],
+          ['桌面活跃对话', metrics.desktopCodexActiveThreads, '直接来自宿主机 Codex 桌面快照', 'blue'],
+          ['尚未映射到控制面', metrics.desktopCodexLiveGap, '桌面端活跃，但会话桥还没精确对上', 'red'],
+          ['可继续的 Codex 对话', metrics.standbyCodex, '当前没在执行，但上下文还保留着', 'gold'],
+          ['进行中的回答轮次', metrics.desktopCodexInflightTurns, '即使会话桥没完全命中，也会在设备级显示', 'gold'],
+          ['仅有简略摘要的对话', metrics.lightweightCodex, '只拿到列表摘要，点详情后会补更多内容', 'gold'],
+          ['等你补一句', metrics.waitingInput, '这些 Orchard 任务正等你继续追问', 'gold'],
+          ['失败任务', metrics.failedManaged, '建议优先打开日志和状态变化', 'red']
         ];
         metricsRoot.innerHTML = cards.map(([title, value, detail, tone]) => `
           <article class="metric ${tone}">
@@ -2222,10 +2428,130 @@ enum OrchardLandingPage {
           </article>`).join('');
       }
 
+      function renderGuideCard(title, summary, note, buttonHTML, tags = []) {
+        return `
+          <article class="guide-card">
+            <h3>${escapeHTML(title)}</h3>
+            <p>${escapeHTML(summary)}</p>
+            ${tags.length ? `<div class="detail-meta">${tags.map((tag) => `<span>${escapeHTML(tag)}</span>`).join('')}</div>` : ''}
+            <div class="guide-note">${escapeHTML(note)}</div>
+            <div class="row-actions">${buttonHTML}</div>
+          </article>`;
+      }
+
+      function renderGuide() {
+        const observeTarget = topObserveTarget();
+        const continueTarget = topContinueTarget();
+        const stopTarget = topStopTarget();
+        const hostConsoleDevice = preferredHostConsoleDevice();
+        const hostConsoleInfo = deviceLocalConsoleInfo(hostConsoleDevice);
+
+        const cards = [];
+        cards.push(renderGuideCard(
+          '我想发起一个任务',
+          '从网页端直接下发给 Orchard。最少只要选项目，再写一句你想让 Codex 做什么。',
+          '如果不选电脑，控制面会自动挑一台当前在线、能接这个项目的宿主机。',
+          '<button type="button" class="action-button primary" data-action="focus-section" data-target-id="launch">去发起新任务</button>',
+          ['主链路', '最推荐']
+        ));
+
+        if (observeTarget) {
+          const buttonHTML = observeTarget.type === 'managed'
+            ? `<button type="button" class="action-button primary" data-action="select-managed" data-run-id="${escapeHTML(observeTarget.run.id)}" data-scroll-target="detail">去看这个任务</button>`
+            : observeTarget.type === 'task'
+              ? `<button type="button" class="action-button primary" data-action="select-task" data-task-id="${escapeHTML(observeTarget.task.id)}" data-scroll-target="detail">去看这个任务</button>`
+              : `<button type="button" class="action-button primary" data-action="select-codex" data-device-id="${escapeHTML(observeTarget.session.deviceID)}" data-session-id="${escapeHTML(observeTarget.session.id)}" data-scroll-target="detail">去看这个对话</button>`;
+          cards.push(renderGuideCard(
+            '我想先观察进度',
+            `当前最值得先看的是「${guideTargetTitle(observeTarget)}」。`,
+            guideTargetSummary(observeTarget) || '点开后右侧会展示状态变化、日志和可操作按钮。',
+            buttonHTML,
+            ['观察', observeTarget.type === 'managed' ? 'Orchard 任务' : observeTarget.type === 'task' ? '兼容任务' : 'Codex 对话']
+          ));
+        } else {
+          cards.push(renderGuideCard(
+            '我想先观察进度',
+            '当前还没有明显需要你立刻处理的执行项。',
+            '新的 Orchard 任务、兼容任务或宿主机 Codex 对话出现后，这里会自动变成可点的入口。',
+            '<button type="button" class="action-button" data-action="focus-section" data-target-id="control">去看总览</button>',
+            ['观察']
+          ));
+        }
+
+        if (continueTarget?.type === 'managed') {
+          cards.push(renderGuideCard(
+            '我想补一句继续追问',
+            `最适合直接继续的是「${guideTargetTitle(continueTarget)}」。`,
+            '点下去会直接弹出输入框，把你的下一句补充说明发给当前任务。',
+            `<button type="button" class="action-button primary" data-action="continue-managed" data-run-id="${escapeHTML(continueTarget.run.id)}">继续这个 Orchard 任务</button>`,
+            ['追问', '等待输入']
+          ));
+        } else if (continueTarget?.type === 'codex') {
+          cards.push(renderGuideCard(
+            '我想补一句继续追问',
+            `最适合直接继续的是「${guideTargetTitle(continueTarget)}」。`,
+            '点下去会直接把下一句发送到宿主机上已经存在的 Codex 对话。',
+            `<button type="button" class="action-button primary" data-action="continue-codex" data-device-id="${escapeHTML(continueTarget.session.deviceID)}" data-session-id="${escapeHTML(continueTarget.session.id)}">继续这个 Codex 对话</button>`,
+            ['追问', '宿主机对话']
+          ));
+        } else {
+          cards.push(renderGuideCard(
+            '我想补一句继续追问',
+            '当前没有明显在等你回复的任务或对话。',
+            '如果你只是想开始新的工作，直接发起新任务最快；如果要接着以前的上下文，去看 Codex 对话列表。',
+            '<button type="button" class="action-button" data-action="focus-section" data-target-id="codex">去看可继续的对话</button>',
+            ['追问']
+          ));
+        }
+
+        if (stopTarget) {
+          const buttonHTML = stopTarget.type === 'managed'
+            ? `<button type="button" class="action-button warn" data-action="select-managed" data-run-id="${escapeHTML(stopTarget.run.id)}" data-scroll-target="detail">去处理中断 / 停止</button>`
+            : stopTarget.type === 'task'
+              ? `<button type="button" class="action-button warn" data-action="select-task" data-task-id="${escapeHTML(stopTarget.task.id)}" data-scroll-target="detail">去处理停止</button>`
+              : `<button type="button" class="action-button warn" data-action="select-codex" data-device-id="${escapeHTML(stopTarget.session.deviceID)}" data-session-id="${escapeHTML(stopTarget.session.id)}" data-scroll-target="detail">去处理中断</button>`;
+          cards.push(renderGuideCard(
+            '我想终止 / 中断当前执行',
+            `建议先定位到「${guideTargetTitle(stopTarget)}」，再决定是中断还是停止。`,
+            '这里不会替你直接做破坏性动作，只会先把最相关的对象打开，避免误操作。',
+            buttonHTML,
+            ['终止', '先确认再执行']
+          ));
+        } else {
+          cards.push(renderGuideCard(
+            '我想终止 / 中断当前执行',
+            '当前没有明显需要立刻中断或停止的执行项。',
+            '如果你想确认有没有漏掉的运行中对象，可以去“现在最需要处理”里再看一眼。',
+            '<button type="button" class="action-button" data-action="focus-section" data-target-id="control">去看当前最需要处理</button>',
+            ['终止']
+          ));
+        }
+
+        if (hostConsoleInfo && hostConsoleDevice) {
+          cards.push(renderGuideCard(
+            '我想看宿主机真相',
+            `可以直接打开 ${hostConsoleDevice.name || hostConsoleDevice.deviceID} 的宿主机控制台。`,
+            hostConsoleInfo.note,
+            `<a class="action-button primary" href="${escapeHTML(hostConsoleInfo.url)}" target="_blank" rel="noreferrer">打开宿主机控制台</a>`,
+            ['宿主机', hostConsoleDevice.name || hostConsoleDevice.deviceID]
+          ));
+        } else {
+          cards.push(renderGuideCard(
+            '我想看宿主机真相',
+            '当前还没有可直接打开的宿主机控制台入口。',
+            '等某台在线宿主机公开本地状态页后，这里会自动变成可点链接；现在也可以先去“在线电脑”看有哪些机器在线。',
+            '<button type="button" class="action-button" data-action="focus-section" data-target-id="devices">去看在线电脑</button>',
+            ['宿主机']
+          ));
+        }
+
+        guideRoot.innerHTML = cards.join('');
+      }
+
       function renderStatusStrip() {
         const metrics = currentMetrics();
         refreshMeta.textContent = `最近同步 ${formatTime(state.lastUpdatedAt.toISOString())}`;
-        codexMeta.textContent = `运行中：总 ${metrics.combined} · 托管 ${metrics.runningManaged} · 独立任务 ${metrics.unmanagedTasks} · Codex 观测 ${metrics.observedRunningCodex} · 会话已映射 ${metrics.runningCodex} · 桌面活跃线程 ${metrics.desktopCodexActiveThreads} · 未映射 ${metrics.desktopCodexLiveGap} · 进行中轮次 ${metrics.desktopCodexInflightTurns}`;
+        codexMeta.textContent = `现在执行中：总 ${metrics.combined} · Orchard 任务 ${metrics.runningManaged} · 兼容任务 ${metrics.unmanagedTasks} · Codex 观测 ${metrics.observedRunningCodex} · 已映射对话 ${metrics.runningCodex} · 桌面活跃对话 ${metrics.desktopCodexActiveThreads} · 未映射 ${metrics.desktopCodexLiveGap} · 进行中轮次 ${metrics.desktopCodexInflightTurns}`;
       }
 
       function renderManagedRow(run, options = {}) {
@@ -2235,15 +2561,15 @@ enum OrchardLandingPage {
           <article class="row${selected}">
             <div class="row-head">
               <div class="row-title-group">
-                <span class="row-kicker">托管运行</span>
+                <span class="row-kicker">Orchard 任务</span>
                 <h3 class="row-title">${escapeHTML(run.title || run.id)}</h3>
               </div>
               <span class="chip ${managedStatusTone(run.status)}">${escapeHTML(managedStatusLabel(run.status))}</span>
             </div>
             <div class="meta">
-              <span>设备 ${escapeHTML(managedDeviceLabel(run))}</span>
-              <span>工作区 ${escapeHTML(run.workspaceID || '—')}</span>
-              <span>目录 ${escapeHTML(shortPath(run.cwd))}</span>
+              <span>电脑 ${escapeHTML(managedDeviceLabel(run))}</span>
+              <span>项目 ${escapeHTML(run.workspaceID || '—')}</span>
+              <span>执行目录 ${escapeHTML(shortPath(run.cwd))}</span>
               <span>更新于 ${escapeHTML(formatTime(run.updatedAt))}</span>
             </div>
             <p class="summary">${escapeHTML(managedSummary(run))}</p>
@@ -2255,6 +2581,10 @@ enum OrchardLandingPage {
         const buttons = [
           `<button type="button" class="action-button primary" data-action="select-managed" data-run-id="${escapeHTML(run.id)}">查看详情</button>`
         ];
+        if (run.deviceID) {
+          const hostLink = hostConsoleLink(run.deviceID, '宿主机控制台');
+          if (hostLink) buttons.push(hostLink);
+        }
         if (canContinueManaged(run)) {
           buttons.push(`<button type="button" class="action-button" data-action="continue-managed" data-run-id="${escapeHTML(run.id)}">继续追问</button>`);
         }
@@ -2281,16 +2611,16 @@ enum OrchardLandingPage {
           <article class="row${selected}">
             <div class="row-head">
               <div class="row-title-group">
-                <span class="row-kicker">独立任务</span>
+                <span class="row-kicker">兼容任务</span>
                 <h3 class="row-title">${escapeHTML(task.title || task.id)}</h3>
               </div>
               <span class="chip ${taskStatusTone(task.status)}">${escapeHTML(taskStatusLabel(task.status))}</span>
             </div>
             <div class="meta">
-              <span>设备 ${escapeHTML(taskDeviceLabel(task))}</span>
-              <span>工作区 ${escapeHTML(task.workspaceID || '—')}</span>
-              <span>目录 ${escapeHTML(pathTitle)}</span>
-              <span>类型 ${escapeHTML(taskKindLabel(task.kind))}</span>
+              <span>电脑 ${escapeHTML(taskDeviceLabel(task))}</span>
+              <span>项目 ${escapeHTML(task.workspaceID || '—')}</span>
+              <span>执行目录 ${escapeHTML(pathTitle)}</span>
+              <span>执行方式 ${escapeHTML(taskKindLabel(task.kind))}</span>
               <span>更新于 ${escapeHTML(formatTime(task.updatedAt))}</span>
             </div>
             <p class="summary">${escapeHTML(summary)}</p>
@@ -2318,16 +2648,16 @@ enum OrchardLandingPage {
           <article class="row${selected}">
             <div class="row-head">
               <div class="row-title-group">
-                <span class="row-kicker">Codex 会话</span>
+                <span class="row-kicker">本机 Codex 对话</span>
                 <h3 class="row-title">${escapeHTML(session.name || session.preview || session.id)}</h3>
               </div>
               <span class="chip ${codexDisplayStateTone(session)}">${escapeHTML(codexDisplayStateLabel(session))}</span>
             </div>
             <div class="meta">
-              <span>设备 ${escapeHTML(session.deviceName || session.deviceID)}</span>
-              <span>工作区 ${escapeHTML(session.workspaceID || '—')}</span>
-              <span>来源 ${escapeHTML(session.source || '未知')}</span>
-              <span>最近轮次 ${escapeHTML(codexLastTurnLabel(session))}</span>
+              <span>电脑 ${escapeHTML(session.deviceName || session.deviceID)}</span>
+              <span>项目 ${escapeHTML(session.workspaceID || '—')}</span>
+              <span>来自 ${escapeHTML(session.source || '未知')}</span>
+              <span>最近状态 ${escapeHTML(codexLastTurnLabel(session))}</span>
               <span>目录 ${escapeHTML(shortPath(session.cwd))}</span>
               <span>更新于 ${escapeHTML(formatTime(session.updatedAt))}</span>
             </div>
@@ -2341,6 +2671,8 @@ enum OrchardLandingPage {
           `<button type="button" class="action-button primary" data-action="select-codex" data-device-id="${escapeHTML(session.deviceID)}" data-session-id="${escapeHTML(session.id)}">查看详情</button>`,
           `<button type="button" class="action-button" data-action="continue-codex" data-device-id="${escapeHTML(session.deviceID)}" data-session-id="${escapeHTML(session.id)}">继续追问</button>`
         ];
+        const hostLink = hostConsoleLink(session.deviceID, '宿主机控制台');
+        if (hostLink) buttons.push(hostLink);
         if (isCodexRunning(session)) {
           buttons.push(`<button type="button" class="action-button warn" data-action="interrupt-codex" data-device-id="${escapeHTML(session.deviceID)}" data-session-id="${escapeHTML(session.id)}">中断</button>`);
         }
@@ -2368,17 +2700,12 @@ enum OrchardLandingPage {
       }
 
       function renderControl() {
-        const managed = filteredManagedRuns().sort(compareManagedRuns).slice(0, 5).map((run) => ({ type: 'managed', rank: managedAttentionRank(run.status), run }));
-        const tasks = filteredIndependentTasks().sort(compareTasks).slice(0, 5).map((task) => ({ type: 'task', rank: taskAttentionRank(task), task }));
-        const codex = filteredCodexSessions().sort(compareCodexSessions).slice(0, 5).map((session) => ({ type: 'codex', rank: codexAttentionRank(session), session }));
-        const combined = [...managed, ...tasks, ...codex]
-          .sort((lhs, rhs) => lhs.rank - rhs.rank || (rhs.run?.updatedAt || rhs.task?.updatedAt || rhs.session?.updatedAt).localeCompare(lhs.run?.updatedAt || lhs.task?.updatedAt || lhs.session?.updatedAt || ''))
-          .slice(0, 8);
+        const combined = prioritizedControlItems(8);
 
         if (!combined.length) {
           controlRoot.innerHTML = filtersApplied()
             ? renderEmpty('当前筛选下没有可处理项目。', '你可以放宽搜索词、切回全部设备，或取消“只看活跃项”。')
-            : renderEmpty('当前没有需要你立即处理的项目。', '新的托管 run、独立任务或桌面 Codex 会话出现后，这里会自动刷新。');
+            : renderEmpty('当前没有需要你立即处理的内容。', '新的 Orchard 任务、兼容任务或宿主机 Codex 对话出现后，这里会自动刷新。');
           return;
         }
 
@@ -2395,8 +2722,8 @@ enum OrchardLandingPage {
         runsRoot.innerHTML = runs.length
           ? runs.map((run) => renderManagedRow(run)).join('')
           : filtersApplied()
-            ? renderEmpty('当前筛选下没有托管运行。', '你可以清空筛选，或切到别的设备继续查看。')
-            : renderEmpty('当前没有托管运行。', '你从移动端或网页端创建新的 managed run 之后，这里会出现执行记录。');
+            ? renderEmpty('当前筛选下没有 Orchard 任务。', '你可以清空筛选，或切到别的电脑继续查看。')
+            : renderEmpty('当前还没有通过 Orchard 发起的任务。', '你从网页端或移动端创建新任务后，这里会出现执行记录。');
       }
 
       function renderTasks() {
@@ -2404,8 +2731,8 @@ enum OrchardLandingPage {
         tasksRoot.innerHTML = tasks.length
           ? tasks.map((task) => renderTaskRow(task)).join('')
           : filtersApplied()
-            ? renderEmpty('当前筛选下没有独立任务。', '你可以清空筛选，或切到别的设备继续查看。')
-            : renderEmpty('当前没有独立任务。', '只有直接通过 /api/tasks 下发的任务会显示在这里。');
+            ? renderEmpty('当前筛选下没有兼容任务。', '你可以清空筛选，或切到别的电脑继续查看。')
+            : renderEmpty('当前没有兼容任务。', '只有直接通过 /api/tasks 下发的旧链路任务会显示在这里。');
       }
 
       function renderCodex() {
@@ -2413,8 +2740,8 @@ enum OrchardLandingPage {
         codexRoot.innerHTML = sessions.length
           ? sessions.map((session) => renderCodexRow(session)).join('')
           : filtersApplied()
-            ? renderEmpty('当前筛选下没有 Codex 会话。', '你可以取消设备限制，或关闭“只看活跃项”。')
-            : renderEmpty('当前没有可读取的 Codex 会话。', '确认本机 OrchardAgent 已在线，并且桌面端存在可读取的 Codex 线程；若只看到轻摘要，打开详情后会继续拉轮次。');
+            ? renderEmpty('当前筛选下没有 Codex 对话。', '你可以取消电脑限制，或关闭“只看活跃项”。')
+            : renderEmpty('当前没有可读取的本机 Codex 对话。', '确认 OrchardAgent 已在线，并且宿主机桌面端存在可读取的 Codex 对话；若只看到轻摘要，打开详情后会继续补内容。');
       }
 
       function renderDevices() {
@@ -2450,6 +2777,7 @@ enum OrchardLandingPage {
             const codexGapMeta = device.capabilities?.includes('codex') && deviceCodexLiveGap(device) > 0
               ? `<span>未映射 ${escapeHTML(deviceCodexLiveGap(device))}</span>`
               : '';
+            const localConsole = deviceLocalConsoleInfo(device);
             return `
             <article class="row">
               <div class="row-head">
@@ -2462,9 +2790,9 @@ enum OrchardLandingPage {
               <div class="meta">
                 <span>主机 ${escapeHTML(device.hostName || '—')}</span>
                 <span>总运行 ${escapeHTML(deviceCombinedRunningCount(device))}</span>
-                <span>托管运行 ${escapeHTML(runCounts[device.deviceID] || 0)}</span>
-                <span>独立任务 ${escapeHTML(unmanagedRunningTaskCountForDevice(device.deviceID))}</span>
-                <span>Codex 推理 ${escapeHTML(observedRunningCodexSessionsForDevice(device))}</span>
+                <span>Orchard 任务 ${escapeHTML(runCounts[device.deviceID] || 0)}</span>
+                <span>兼容任务 ${escapeHTML(unmanagedRunningTaskCountForDevice(device.deviceID))}</span>
+                <span>Codex 执行中 ${escapeHTML(observedRunningCodexSessionsForDevice(device))}</span>
                 <span>负载 ${escapeHTML(device.metrics?.loadAverage?.toFixed(2) || '--')}</span>
                 <span>CPU ${escapeHTML(device.metrics?.cpuPercentApprox ? Math.round(device.metrics.cpuPercentApprox) + '%' : '--')}</span>
                 <span>内存 ${escapeHTML(device.metrics?.memoryPercent ? Math.round(device.metrics.memoryPercent) + '%' : '--')}</span>
@@ -2472,7 +2800,12 @@ enum OrchardLandingPage {
                 <span>轮次 ${escapeHTML(deviceCodexMetricDisplay(device, 'inflightTurnCount'))}</span>
                 ${codexGapMeta}
               </div>
-              <p class="summary">能力：${escapeHTML((device.capabilities || []).map(capabilityLabel).join(' / ') || '暂无上报')}；${escapeHTML(codexSummary)}${codexGapSummary ? `${escapeHTML(codexGapSummary)}；` : ''}设备心跳更新于 ${escapeHTML(formatTime(device.lastSeenAt))}。</p>
+              <p class="summary">能力：${escapeHTML((device.capabilities || []).map(capabilityLabel).join(' / ') || '暂无上报')}；${escapeHTML(codexSummary)}${codexGapSummary ? `${escapeHTML(codexGapSummary)}；` : ''}${localConsole ? `宿主机控制台已开启；` : ''}设备心跳更新于 ${escapeHTML(formatTime(device.lastSeenAt))}。</p>
+              ${localConsole ? `
+              <div class="row-actions">
+                ${hostConsoleLink(device.deviceID)}
+                <span class="status-pill">${escapeHTML(localConsole.note)}</span>
+              </div>` : ''}
             </article>`;
           }).join('')
           : filtersApplied()
@@ -2562,6 +2895,44 @@ enum OrchardLandingPage {
             <div class="row-actions">
               <a class="action-button" href="${escapeHTML(projectContextSummaryURL(deviceID, workspaceID))}" target="_blank" rel="noreferrer">查看 JSON</a>
             </div>
+          </div>`;
+      }
+
+      function renderHostConsoleDetailCard(deviceID, options = {}) {
+        if (!deviceID) {
+          return `
+            <div class="detail-card">
+              <h4>宿主机控制台</h4>
+              <p class="footnote">${escapeHTML(options.missingDeviceMessage || '当前还没有落到具体设备，所以暂时不能跳到宿主机控制台。')}</p>
+            </div>`;
+        }
+
+        const device = deviceByID(deviceID);
+        if (!device) {
+          return `
+            <div class="detail-card">
+              <h4>宿主机控制台</h4>
+              <p class="footnote">控制面还没拿到这台机器的最新地址，刷新后再试。</p>
+            </div>`;
+        }
+
+        const localConsole = deviceLocalConsoleInfo(device);
+        if (!localConsole) {
+          return `
+            <div class="detail-card">
+              <h4>宿主机控制台</h4>
+              <p class="footnote">${escapeHTML(options.unavailableMessage || '这台机器还没有公开宿主机控制台地址，所以当前只能通过控制面侧观察。')}</p>
+            </div>`;
+        }
+
+        return `
+          <div class="detail-card">
+            <h4>宿主机控制台</h4>
+            <p class="footnote">${escapeHTML(options.availableMessage || '如果你想看宿主机真实日志、确认是不是在等待输入，或者直接从宿主机侧补充说明 / 中断 / 终止，就打开这台机器的宿主机控制台。')}</p>
+            <div class="row-actions">
+              ${hostConsoleLink(deviceID)}
+            </div>
+            <p class="footnote">${escapeHTML(localConsole.note)}</p>
           </div>`;
       }
 
@@ -2722,11 +3093,11 @@ enum OrchardLandingPage {
 
       function renderDetail() {
         if (!state.selected) {
-          detailRoot.innerHTML = renderEmpty('选择一个运行项查看详情。', '你可以从远程指挥台、托管运行、独立任务或 Codex 会话列表里打开详情。');
+          detailRoot.innerHTML = renderEmpty('先选一个任务或对话。', '如果你只是测试主链路，优先点“现在最需要处理”或“通过 Orchard 发起的任务”里的条目。');
           return;
         }
         if (state.detailLoading) {
-          detailRoot.innerHTML = renderEmpty('正在加载详情...', '浏览器正在读取时间线、日志和可操作状态。');
+          detailRoot.innerHTML = renderEmpty('正在加载详情...', '浏览器正在读取状态变化、日志和可操作按钮。');
           return;
         }
         if (state.detailError) {
@@ -2748,6 +3119,86 @@ enum OrchardLandingPage {
         detailRoot.innerHTML = renderEmpty('暂无详情。', '当前选择项还没有可展示的更多内容。');
       }
 
+      function renderActionCoachCard(title, summary, tags = []) {
+        return `
+          <div class="detail-card">
+            <h4>${escapeHTML(title)}</h4>
+            <p class="footnote">${escapeHTML(summary)}</p>
+            ${tags.length ? `<div class="detail-meta">${tags.map((tag) => `<span>${escapeHTML(tag)}</span>`).join('')}</div>` : ''}
+          </div>`;
+      }
+
+      function managedCoachCard(run) {
+        let summary = '先看状态变化和日志，再决定要继续追问、重试还是打开宿主机控制台核对真实情况。';
+        const tags = [managedStatusLabel(run.status)];
+        if (run.deviceID) tags.push(managedDeviceLabel(run));
+
+        if (run.status === 'waitingInput') {
+          summary = '这个 Orchard 任务正在等你补一句，最直接的下一步就是点“继续追问”；如果你不想让它继续跑，也可以点“中断”或“停止”。';
+          tags.push('推荐：继续追问');
+        } else if (run.status === 'running') {
+          summary = '这个 Orchard 任务正在执行，先看输出日志和状态变化；如果你想补充约束，可以继续追问，感觉卡住时再中断。';
+          tags.push('推荐：先看日志');
+        } else if (run.status === 'queued' || run.status === 'launching') {
+          summary = '这个 Orchard 任务还在排队或刚启动，先观察即可；真正落到宿主机之后，这里会出现更明确的宿主机控制台入口。';
+          tags.push('推荐：先观察');
+        } else if (run.status === 'failed') {
+          summary = '这次运行失败了，建议先看状态变化和输出日志确认原因；如果只是偶发问题，可以直接点“重试”。';
+          tags.push('推荐：先排查');
+        } else if (run.status === 'succeeded') {
+          summary = '这一轮已经完成，适合先复盘结果和日志；如果你要再来一轮，可以直接点“重试”。';
+          tags.push('推荐：复盘或重试');
+        } else if (run.status === 'interrupted' || run.status === 'cancelled') {
+          summary = '这一轮已经被中断或停止；如果还想继续推进，最稳妥的方式是点“重试”重新拉起一轮。';
+          tags.push('推荐：重试');
+        } else if (run.status === 'stopRequested') {
+          summary = '停止请求已经发出，先观察状态变化和日志，等宿主机确认停下来。';
+          tags.push('推荐：等待停止');
+        }
+
+        return renderActionCoachCard('现在最建议怎么做', summary, tags);
+      }
+
+      function taskCoachCard(task) {
+        let summary = '这是旧接口任务，优先看日志和状态变化；如需终止，直接点“停止”即可。';
+        const tags = [taskStatusLabel(task.status), taskKindLabel(task.kind)];
+        if (task.assignedDeviceID) tags.push(taskDeviceLabel(task));
+
+        if (task.status === 'queued') {
+          summary = '这个旧接口任务还在排队，先观察即可；一旦落到宿主机并开始输出，日志会自动刷新。';
+          tags.push('推荐：先观察');
+        } else if (task.status === 'running') {
+          summary = '这个旧接口任务正在执行，先看日志判断是否正常推进；如果想终止，就直接点“停止”。';
+          tags.push('推荐：看日志或停止');
+        } else if (task.status === 'stopRequested') {
+          summary = '停止请求已经发出，先等宿主机确认收敛；日志里通常会先出现最后一批输出。';
+          tags.push('推荐：等待停止');
+        } else if (['succeeded', 'failed', 'cancelled'].includes(task.status)) {
+          summary = '这个旧接口任务已经结束，适合先看执行内容和输出日志做复盘。';
+          tags.push('推荐：复盘');
+        }
+
+        return renderActionCoachCard('现在最建议怎么做', summary, tags);
+      }
+
+      function codexCoachCard(session) {
+        let summary = '这是宿主机上真实存在的 Codex 对话；适合先看时间线，再决定要不要继续追问或打开宿主机控制台。';
+        const tags = [codexDisplayStateLabel(session), session.deviceName || session.deviceID];
+
+        if (isCodexRunning(session)) {
+          summary = '这个 Codex 对话正在执行，先看时间线和轮次；如果你要临时打断它，可以点“中断”。';
+          tags.push('推荐：先观察');
+        } else if (isCodexStandby(session)) {
+          summary = '这个 Codex 对话当前不在执行，但上下文还在，最直接的下一步就是点“继续追问”。';
+          tags.push('推荐：继续追问');
+        } else if (isCodexFinished(session)) {
+          summary = '这个 Codex 对话最近一轮已经结束，适合先复盘时间线；如果还想接着问，也可以继续追问开下一轮。';
+          tags.push('推荐：复盘或继续');
+        }
+
+        return renderActionCoachCard('现在最建议怎么做', summary, tags);
+      }
+
       function renderManagedDetail(detail) {
         const run = detail.run;
         const events = [...(detail.events || [])].sort((lhs, rhs) => new Date(rhs.createdAt) - new Date(lhs.createdAt)).slice(0, 30);
@@ -2761,7 +3212,7 @@ enum OrchardLandingPage {
           <div class="detail-shell">
             <div class="detail-header">
               <div class="detail-meta">
-                <span>托管运行</span>
+                <span>通过 Orchard 发起</span>
                 <span>${escapeHTML(managedStatusLabel(run.status))}</span>
                 <span>${escapeHTML(managedDeviceLabel(run))}</span>
               </div>
@@ -2769,22 +3220,26 @@ enum OrchardLandingPage {
               <p class="detail-subtitle">${escapeHTML(managedSummary(run))}</p>
               <div class="detail-actions">${actions.join('')}</div>
             </div>
+            ${managedCoachCard(run)}
             <div class="detail-card">
-              <h4>概况</h4>
+              <h4>基础信息</h4>
               <div class="detail-meta">
                 <span>运行 ID ${escapeHTML(run.id)}</span>
-                <span>底层任务 ${escapeHTML(run.taskID || '—')}</span>
-                <span>Codex 会话 ${escapeHTML(run.codexSessionID || '—')}</span>
-                <span>工作区 ${escapeHTML(run.workspaceID || '—')}</span>
-                <span>路径 ${escapeHTML(run.cwd || '—')}</span>
+                <span>内部 task ID ${escapeHTML(run.taskID || '—')}</span>
+                <span>关联 Codex 对话 ${escapeHTML(run.codexSessionID || '—')}</span>
+                <span>项目 ${escapeHTML(run.workspaceID || '—')}</span>
+                <span>执行目录 ${escapeHTML(run.cwd || '—')}</span>
               </div>
             </div>
+            ${renderHostConsoleDetailCard(run.deviceID, {
+              missingDeviceMessage: '运行还没有分配设备。等它真正落到某台宿主机后，这里会出现宿主机控制台入口。'
+            })}
             ${renderProjectContextDetailCard(run.deviceID, run.workspaceID, {
               missingDeviceMessage: '运行还没有分配设备。等控制面把任务落到具体设备后，这里会自动显示项目上下文。'
             })}
-            ${run.lastUserPrompt ? `<div class="detail-card"><h4>最近输入</h4><pre>${escapeHTML(run.lastUserPrompt)}</pre></div>` : ''}
+            ${run.lastUserPrompt ? `<div class="detail-card"><h4>你最近发给它的话</h4><pre>${escapeHTML(run.lastUserPrompt)}</pre></div>` : ''}
             <div class="detail-block">
-              <h4>事件</h4>
+              <h4>状态变化</h4>
               <div class="detail-list">
                 ${events.length ? events.map((event) => `
                   <article class="detail-list-item">
@@ -2793,11 +3248,11 @@ enum OrchardLandingPage {
                       <span class="chip ${managedStatusTone(run.status)}">${escapeHTML(formatTime(event.createdAt))}</span>
                     </div>
                     ${event.body ? `<div class="detail-list-item-body">${escapeHTML(event.body)}</div>` : ''}
-                  </article>`).join('') : renderEmpty('当前没有事件记录。', '刷新后会重新读取控制面的运行时间线。')}
+                  </article>`).join('') : renderEmpty('当前没有状态变化记录。', '刷新后会重新读取控制面的运行时间线。')}
               </div>
             </div>
             <div class="detail-block">
-              <h4>日志</h4>
+              <h4>输出日志</h4>
               <div class="detail-list">
                 ${logs.length ? logs.map((log) => `
                   <article class="detail-list-item">
@@ -2805,7 +3260,7 @@ enum OrchardLandingPage {
                       <div class="detail-list-item-title">${escapeHTML(formatTime(log.createdAt))}</div>
                     </div>
                     <div class="detail-list-item-body">${escapeHTML(log.line || '')}</div>
-                  </article>`).join('') : renderEmpty('当前还没有日志。', '当 Agent 把运行输出同步到控制面后，这里会自动更新。')}
+                  </article>`).join('') : renderEmpty('当前还没有输出日志。', '当 Agent 把运行输出同步到控制面后，这里会自动更新。')}
               </div>
             </div>
           </div>`;
@@ -2820,7 +3275,7 @@ enum OrchardLandingPage {
           <div class="detail-shell">
             <div class="detail-header">
               <div class="detail-meta">
-                <span>独立任务</span>
+                <span>兼容任务</span>
                 <span>${escapeHTML(taskStatusLabel(task.status))}</span>
                 <span>${escapeHTML(taskDeviceLabel(task))}</span>
               </div>
@@ -2828,20 +3283,24 @@ enum OrchardLandingPage {
               <p class="detail-subtitle">${escapeHTML(taskSummary(task))}</p>
               <div class="detail-actions">${actions.join('')}</div>
             </div>
+            ${taskCoachCard(task)}
             <div class="detail-card">
-              <h4>概况</h4>
+              <h4>基础信息</h4>
               <div class="detail-meta">
                 <span>任务 ID ${escapeHTML(task.id)}</span>
-                <span>类型 ${escapeHTML(taskKindLabel(task.kind))}</span>
-                <span>工作区 ${escapeHTML(task.workspaceID || '—')}</span>
-                <span>路径 ${escapeHTML(task.relativePath || '工作区根目录')}</span>
+                <span>执行方式 ${escapeHTML(taskKindLabel(task.kind))}</span>
+                <span>项目 ${escapeHTML(task.workspaceID || '—')}</span>
+                <span>执行目录 ${escapeHTML(task.relativePath || '工作区根目录')}</span>
                 <span>优先级 ${escapeHTML(taskPriorityLabel(task.priority))}</span>
                 <span>退出码 ${escapeHTML(task.exitCode ?? '—')}</span>
               </div>
               ${task.summary ? `<p class="footnote">${escapeHTML(task.summary)}</p>` : ''}
             </div>
+            ${renderHostConsoleDetailCard(task.assignedDeviceID, {
+              missingDeviceMessage: '当前兼容任务还没有落到具体设备，所以这里暂时没有宿主机控制台入口。'
+            })}
             <div class="detail-card">
-              <h4>内容</h4>
+              <h4>执行内容</h4>
               <pre>${escapeHTML(taskPayloadPreview(task) || '暂无内容')}</pre>
             </div>
             <div class="detail-card">
@@ -2854,7 +3313,7 @@ enum OrchardLandingPage {
               </div>
             </div>
             <div class="detail-block">
-              <h4>日志</h4>
+              <h4>输出日志</h4>
               <div class="detail-list">
                 ${logs.length ? logs.map((log) => `
                   <article class="detail-list-item">
@@ -2863,7 +3322,7 @@ enum OrchardLandingPage {
                       <span class="chip gray">${escapeHTML(log.deviceID || '—')}</span>
                     </div>
                     <div class="detail-list-item-body">${escapeHTML(log.line || '')}</div>
-                  </article>`).join('') : renderEmpty('当前还没有日志。', '任务开始输出后，这里会自动刷新。')}
+                  </article>`).join('') : renderEmpty('当前还没有输出日志。', '任务开始输出后，这里会自动刷新。')}
               </div>
             </div>
           </div>`;
@@ -2882,7 +3341,7 @@ enum OrchardLandingPage {
           <div class="detail-shell">
             <div class="detail-header">
               <div class="detail-meta">
-                <span>Codex 会话</span>
+                <span>本机 Codex 对话</span>
                 <span>${escapeHTML(codexDisplayStateLabel(session))}</span>
                 <span>${escapeHTML(session.deviceName || session.deviceID)}</span>
               </div>
@@ -2890,17 +3349,19 @@ enum OrchardLandingPage {
               <p class="detail-subtitle">${escapeHTML(codexSummary(session))}</p>
               <div class="detail-actions">${actions.join('')}</div>
             </div>
+            ${codexCoachCard(session)}
             <div class="detail-card">
-              <h4>概况</h4>
+              <h4>基础信息</h4>
               <div class="detail-meta">
-                <span>会话 ID ${escapeHTML(session.id)}</span>
-                <span>状态细分 ${escapeHTML(codexDisplayStateLabel(session))}</span>
-                <span>最近轮次 ${escapeHTML(codexLastTurnLabel(session))}</span>
+                <span>对话 ID ${escapeHTML(session.id)}</span>
+                <span>当前状态 ${escapeHTML(codexDisplayStateLabel(session))}</span>
+                <span>最近一轮 ${escapeHTML(codexLastTurnLabel(session))}</span>
                 <span>来源 ${escapeHTML(session.source || '—')}</span>
-                <span>工作区 ${escapeHTML(session.workspaceID || '—')}</span>
-                <span>路径 ${escapeHTML(session.cwd || '—')}</span>
+                <span>项目 ${escapeHTML(session.workspaceID || '—')}</span>
+                <span>目录 ${escapeHTML(session.cwd || '—')}</span>
               </div>
             </div>
+            ${renderHostConsoleDetailCard(session.deviceID)}
             ${renderProjectContextDetailCard(session.deviceID, session.workspaceID, {
               missingWorkspaceMessage: '当前会话还没有匹配到 Orchard 工作区；只要 cwd 落在某个已注册 workspace 根路径内，控制面就会自动补齐关联。'
             })}
@@ -2909,7 +3370,7 @@ enum OrchardLandingPage {
               <p class="footnote">${escapeHTML(codexStatusExplanation(session))}</p>
             </div>
             <div class="detail-card">
-              <h4>初始上下文</h4>
+              <h4>一开始的问题</h4>
               <pre>${escapeHTML(session.preview || '暂无')}</pre>
             </div>
             <div class="detail-block">
@@ -2945,6 +3406,7 @@ enum OrchardLandingPage {
         updateToolbarControls();
         renderError();
         renderMetrics();
+        renderGuide();
         renderControl();
         renderRuns();
         renderTasks();
@@ -3168,7 +3630,7 @@ enum OrchardLandingPage {
         createRelativePathInput.value = '';
         createPromptInput.value = '';
         updateCreateHint();
-        showToast('已创建托管 run');
+        showToast('已发起任务');
         await refreshData({ refreshDetail: true, silent: true });
       }
 
@@ -3194,10 +3656,21 @@ enum OrchardLandingPage {
         }, 2200);
       }
 
+      function scrollToSection(targetID) {
+        if (!targetID) return;
+        const element = document.getElementById(targetID);
+        if (!element) return;
+        element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+
       document.addEventListener('click', (event) => {
         const button = event.target.closest('button[data-action]');
         if (!button) return;
         const action = button.dataset.action;
+        if (action === 'focus-section') {
+          scrollToSection(button.dataset.targetId);
+          return;
+        }
         if (action === 'insert-project-command') {
           const item = lookupProjectCommandItem(button.dataset.deviceId, button.dataset.workspaceId, button.dataset.commandId);
           if (!item) {
@@ -3218,6 +3691,7 @@ enum OrchardLandingPage {
           writeSelectionHash();
           refreshSelectedDetail();
           renderAll();
+          scrollToSection(button.dataset.scrollTarget);
           return;
         }
         if (action === 'select-task') {
@@ -3225,6 +3699,7 @@ enum OrchardLandingPage {
           writeSelectionHash();
           refreshSelectedDetail();
           renderAll();
+          scrollToSection(button.dataset.scrollTarget);
           return;
         }
         if (action === 'select-codex') {
@@ -3232,6 +3707,7 @@ enum OrchardLandingPage {
           writeSelectionHash();
           refreshSelectedDetail();
           renderAll();
+          scrollToSection(button.dataset.scrollTarget);
           return;
         }
         if (action === 'continue-managed') {
@@ -3242,8 +3718,8 @@ enum OrchardLandingPage {
             runID: button.dataset.runId,
             deviceID: run?.deviceID || '',
             workspaceID: run?.workspaceID || '',
-            title: '继续托管 run',
-            hint: '这一句会发给当前等待中的托管 Codex run。'
+            title: '继续这个 Orchard 任务',
+            hint: '这一句会继续发给当前等待中的 Orchard 任务。'
           });
           return;
         }
@@ -3255,8 +3731,8 @@ enum OrchardLandingPage {
             deviceID: button.dataset.deviceId,
             workspaceID: session?.workspaceID || '',
             sessionID: button.dataset.sessionId,
-            title: '继续 Codex 会话',
-            hint: '这一句会发送到本机对应的 Codex 会话。'
+            title: '继续这个 Codex 对话',
+            hint: '这一句会发送到宿主机上对应的 Codex 对话。'
           });
           return;
         }

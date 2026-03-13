@@ -43,6 +43,20 @@ struct AgentStatusOptions: Sendable {
     }
 }
 
+struct AgentLocalManagedRunRequest: Codable, Sendable {
+    var title: String?
+    var workspaceID: String
+    var relativePath: String?
+    var prompt: String
+}
+
+struct AgentStatusLocalActions: Sendable {
+    var createManagedRun: @Sendable (AgentLocalManagedRunRequest) async throws -> TaskRecord
+    var continueManagedTask: @Sendable (String, String) async throws -> Void
+    var interruptManagedTask: @Sendable (String) async throws -> Void
+    var stopTask: @Sendable (String) async throws -> Void
+}
+
 struct AgentStatusSnapshot: Codable, Sendable {
     var generatedAt: Date
     var deviceID: String
@@ -67,6 +81,7 @@ struct AgentLocalTaskSnapshot: Codable, Sendable {
     var task: TaskRecord
     var runtimeDirectoryPath: String
     var logPath: String
+    var recentLogLines: [String]
     var cwd: String?
     var pid: Int?
     var startedAt: Date?
@@ -197,6 +212,7 @@ struct AgentStatusService {
                 task: missingTaskRecord(taskID: taskID),
                 runtimeDirectoryPath: runtimeDirectory.path,
                 logPath: logURL.path,
+                recentLogLines: [],
                 cwd: nil,
                 pid: nil,
                 startedAt: nil,
@@ -220,6 +236,7 @@ struct AgentStatusService {
                 task: missingTaskRecord(taskID: taskID),
                 runtimeDirectoryPath: runtimeDirectory.path,
                 logPath: logURL.path,
+                recentLogLines: [],
                 cwd: nil,
                 pid: nil,
                 startedAt: nil,
@@ -237,10 +254,12 @@ struct AgentStatusService {
         switch task.kind {
         case .shell:
             let runtime = try loadShellRuntime(runtimeDirectory: runtimeDirectory)
+            let recentLogLines = readRecentLogLines(logURL: logURL)
             return AgentLocalTaskSnapshot(
                 task: task,
                 runtimeDirectoryPath: runtimeDirectory.path,
                 logPath: logURL.path,
+                recentLogLines: recentLogLines,
                 cwd: runtime?.cwd,
                 pid: runtime.map { Int($0.pid) },
                 startedAt: runtime?.startedAt,
@@ -255,10 +274,12 @@ struct AgentStatusService {
             )
         case .codex:
             let runtime = try loadManagedCodexRuntime(runtimeDirectory: runtimeDirectory)
+            let recentLogLines = readRecentLogLines(logURL: logURL)
             return AgentLocalTaskSnapshot(
                 task: task,
                 runtimeDirectoryPath: runtimeDirectory.path,
                 logPath: logURL.path,
+                recentLogLines: recentLogLines,
                 cwd: runtime?.cwd,
                 pid: runtime?.pid.map(Int.init),
                 startedAt: runtime?.startedAt,
@@ -272,6 +293,22 @@ struct AgentStatusService {
                 runtimeWarning: runtime == nil ? "runtime.json 缺失或损坏" : nil
             )
         }
+    }
+
+    private func readRecentLogLines(logURL: URL, limit: Int = 6) -> [String] {
+        guard
+            FileManager.default.fileExists(atPath: logURL.path),
+            let text = try? String(contentsOf: logURL, encoding: .utf8)
+        else {
+            return []
+        }
+
+        return text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .suffix(limit)
+            .map { $0 }
     }
 
     private func loadShellRuntime(runtimeDirectory: URL) throws -> PersistedShellRuntimeRecord? {

@@ -228,6 +228,125 @@ actor ManagedCodexTaskController {
         }
     }
 
+    func `continue`(with prompt: String) async throws {
+        guard !completionSent else {
+            throw NSError(domain: "ManagedCodexTaskController", code: 6, userInfo: [
+                NSLocalizedDescriptionKey: "当前任务已结束，不能继续追问。",
+            ])
+        }
+
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPrompt.isEmpty else {
+            throw NSError(domain: "ManagedCodexTaskController", code: 7, userInfo: [
+                NSLocalizedDescriptionKey: "继续内容不能为空。",
+            ])
+        }
+
+        guard let connection, let threadID else {
+            throw NSError(domain: "ManagedCodexTaskController", code: 8, userInfo: [
+                NSLocalizedDescriptionKey: "Codex 会话尚未初始化。",
+            ])
+        }
+
+        let preparedPrompt = ProjectContextPromptAugmentor.prepare(
+            userPrompt: trimmedPrompt,
+            workspaceURL: cwd
+        )
+
+        let resumed: ManagedCodexThreadResumeResponse = try await connection.request(
+            method: "thread/resume",
+            params: ManagedCodexThreadResumeParams(
+                threadId: threadID,
+                cwd: cwd.path,
+                approvalPolicy: "never",
+                sandbox: "workspace-write",
+                persistExtendedHistory: true
+            )
+        )
+
+        try handle(thread: resumed.thread, at: Date())
+        guard !completionSent else {
+            throw NSError(domain: "ManagedCodexTaskController", code: 9, userInfo: [
+                NSLocalizedDescriptionKey: "当前任务已结束，不能继续追问。",
+            ])
+        }
+
+        if shouldSteer(resumed.thread), let turnID = resumed.thread.turns.last?.id {
+            lastUserPrompt = preparedPrompt.displayPrompt
+            _ = try await connection.request(
+                method: "turn/steer",
+                params: ManagedCodexTurnSteerParams(
+                    threadId: threadID,
+                    input: [ManagedCodexUserInput(type: "text", text: preparedPrompt.executionPrompt)],
+                    expectedTurnId: turnID
+                )
+            ) as ManagedCodexTurnSteerResponse
+        } else if resumed.thread.status.type == "active", resumed.thread.turns.last?.status == "inProgress" {
+            throw NSError(domain: "ManagedCodexTaskController", code: 10, userInfo: [
+                NSLocalizedDescriptionKey: "当前任务仍在执行，暂时不能继续追问。",
+            ])
+        } else {
+            try await startTurn(
+                executionPrompt: preparedPrompt.executionPrompt,
+                displayPrompt: preparedPrompt.displayPrompt
+            )
+        }
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try await pollOnce()
+    }
+
+    func requestInterrupt() async throws {
+        guard !completionSent else {
+            throw NSError(domain: "ManagedCodexTaskController", code: 11, userInfo: [
+                NSLocalizedDescriptionKey: "当前任务已结束，不能再中断。",
+            ])
+        }
+
+        guard let connection, let threadID else {
+            throw NSError(domain: "ManagedCodexTaskController", code: 12, userInfo: [
+                NSLocalizedDescriptionKey: "Codex 会话尚未初始化。",
+            ])
+        }
+
+        let resumed: ManagedCodexThreadResumeResponse = try await connection.request(
+            method: "thread/resume",
+            params: ManagedCodexThreadResumeParams(
+                threadId: threadID,
+                cwd: cwd.path,
+                approvalPolicy: "never",
+                sandbox: "workspace-write",
+                persistExtendedHistory: true
+            )
+        )
+
+        try handle(thread: resumed.thread, at: Date())
+        guard !completionSent else { return }
+
+        guard lastManagedRunStatus == .running || lastManagedRunStatus == .waitingInput || lastManagedRunStatus == .interrupting else {
+            throw NSError(domain: "ManagedCodexTaskController", code: 13, userInfo: [
+                NSLocalizedDescriptionKey: "当前任务没有可中断的运行中轮次。",
+            ])
+        }
+        guard let turnID = activeTurnID else {
+            throw NSError(domain: "ManagedCodexTaskController", code: 14, userInfo: [
+                NSLocalizedDescriptionKey: "当前任务没有可中断的运行中轮次。",
+            ])
+        }
+
+        lastManagedRunStatus = .interrupting
+        try persistRuntime(now: Date())
+        emitProgressIfNeeded(force: true)
+
+        _ = try await connection.request(
+            method: "turn/interrupt",
+            params: ManagedCodexTurnInterruptParams(threadId: threadID, turnId: turnID)
+        ) as ManagedCodexTurnInterruptResponse
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try await pollOnce()
+    }
+
     private func resumeFromPersistedThread() async throws -> ManagedCodexTaskRecovery {
         guard let threadID, !threadID.isEmpty else {
             return .unavailable
@@ -351,6 +470,29 @@ actor ManagedCodexTaskController {
     }
 
     private func managedStatus(for thread: ManagedCodexThread) -> ManagedRunStatus {
+        if lastManagedRunStatus == .interrupting {
+            if let turn = thread.turns.last {
+                switch turn.status {
+                case "interrupted":
+                    return .interrupted
+                case "failed":
+                    return .failed
+                case "completed":
+                    return thread.status.type == "active" ? .running : .succeeded
+                case "inProgress":
+                    if stopRequested {
+                        return .stopRequested
+                    }
+                    return .interrupting
+                default:
+                    break
+                }
+            }
+            if stopRequested {
+                return .stopRequested
+            }
+        }
+
         let waitingFlags = Set(thread.status.activeFlags)
         let isWaiting = waitingFlags.contains("waitingOnUserInput") || waitingFlags.contains("waitingOnApproval")
 
@@ -637,6 +779,14 @@ actor ManagedCodexTaskController {
             lastAssistantPreview: lastAssistantPreview
         )
     }
+
+    private func shouldSteer(_ thread: ManagedCodexThread) -> Bool {
+        guard thread.turns.last?.status == "inProgress" else {
+            return false
+        }
+        return thread.status.activeFlags.contains("waitingOnUserInput")
+            || thread.status.activeFlags.contains("waitingOnApproval")
+    }
 }
 
 private func renderedLogText(for item: ManagedCodexThreadItem) -> String? {
@@ -770,38 +920,52 @@ private final class ManagedCodexAppServerConnection: @unchecked Sendable {
         )
     }
 
-    func request<Params: Encodable, Result: Decodable>(method: String, params: Params) async throws -> Result {
-        let requestID = nextRequestID
-        nextRequestID += 1
+    func request<Params: Encodable & Sendable, Result: Decodable & Sendable>(
+        method: String,
+        params: Params
+    ) async throws -> Result {
+        try await withCheckedThrowingContinuation { continuation in
+            ioQueue.async {
+                do {
+                    let requestID = self.nextRequestID
+                    self.nextRequestID += 1
 
-        let envelope = RequestEnvelope(id: requestID, method: method, params: params)
-        let encoded = try Self.encoder.encode(envelope)
-        try stdinHandle.write(contentsOf: encoded)
-        try stdinHandle.write(contentsOf: Data("\n".utf8))
+                    let envelope = RequestEnvelope(id: requestID, method: method, params: params)
+                    let encoded = try Self.encoder.encode(envelope)
+                    try self.stdinHandle.write(contentsOf: encoded)
+                    try self.stdinHandle.write(contentsOf: Data("\n".utf8))
 
-        while let line = try await nextStdoutLine() {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            let message = try OrchardJSON.decoder.decode(IncomingMessage.self, from: Data(trimmed.utf8))
-            guard message.id == requestID else { continue }
+                    while let line = try self.blockingReadLine() {
+                        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmed.isEmpty else { continue }
+                        let message = try OrchardJSON.decoder.decode(IncomingMessage.self, from: Data(trimmed.utf8))
+                        guard message.id == requestID else { continue }
 
-            if let error = message.error {
-                throw NSError(domain: "ManagedCodexAppServerConnection", code: error.code ?? 1, userInfo: [
-                    NSLocalizedDescriptionKey: error.message,
-                ])
+                        if let error = message.error {
+                            throw NSError(domain: "ManagedCodexAppServerConnection", code: error.code ?? 1, userInfo: [
+                                NSLocalizedDescriptionKey: error.message,
+                            ])
+                        }
+
+                        guard let resultValue = message.result else {
+                            throw NSError(domain: "ManagedCodexAppServerConnection", code: 2, userInfo: [
+                                NSLocalizedDescriptionKey: "Codex app-server 返回了空结果。",
+                            ])
+                        }
+
+                        let result = try resultValue.decode(Result.self)
+                        continuation.resume(returning: result)
+                        return
+                    }
+
+                    throw NSError(domain: "ManagedCodexAppServerConnection", code: 3, userInfo: [
+                        NSLocalizedDescriptionKey: self.buildTerminationMessage(),
+                    ])
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
-
-            guard let resultValue = message.result else {
-                throw NSError(domain: "ManagedCodexAppServerConnection", code: 2, userInfo: [
-                    NSLocalizedDescriptionKey: "Codex app-server 返回了空结果。",
-                ])
-            }
-            return try resultValue.decode(Result.self)
         }
-
-        throw NSError(domain: "ManagedCodexAppServerConnection", code: 3, userInfo: [
-            NSLocalizedDescriptionKey: buildTerminationMessage(),
-        ])
     }
 
     func stop() {
@@ -934,6 +1098,12 @@ private struct ManagedCodexTurnStartParams: Encodable {
     let input: [ManagedCodexUserInput]
 }
 
+private struct ManagedCodexTurnSteerParams: Encodable {
+    let threadId: String
+    let input: [ManagedCodexUserInput]
+    let expectedTurnId: String
+}
+
 private struct ManagedCodexTurnInterruptParams: Encodable {
     let threadId: String
     let turnId: String
@@ -972,6 +1142,10 @@ private struct ManagedCodexThreadReadResponse: Decodable {
 }
 
 private struct ManagedCodexTurnStartResponse: Decodable {
+    let turn: ManagedCodexTurn
+}
+
+private struct ManagedCodexTurnSteerResponse: Decodable {
     let turn: ManagedCodexTurn
 }
 

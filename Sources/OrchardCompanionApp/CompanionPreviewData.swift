@@ -23,7 +23,15 @@ enum CompanionPreviewData {
             cpuPercentApprox: 31,
             memoryPercent: 62,
             loadAverage: 1.18,
-            runningTasks: 2
+            runningTasks: 2,
+            codexDesktop: CodexDesktopMetrics(
+                activeThreadCount: 3,
+                inflightThreadCount: 1,
+                inflightTurnCount: 1,
+                loadedThreadCount: 8,
+                totalThreadCount: 12,
+                lastSnapshotAt: now.addingTimeInterval(-18)
+            )
         ),
         runningTaskCount: 2,
         registeredAt: now.addingTimeInterval(-86_400),
@@ -110,9 +118,152 @@ enum CompanionPreviewData {
         summary: nil
     )
 
+    static let runningManagedRun = ManagedRunSummary(
+        id: "run-running-001",
+        taskID: runningTask.id,
+        deviceID: onlineDevice.deviceID,
+        deviceName: onlineDevice.name,
+        title: "把托管运行接到移动端",
+        driver: .codexCLI,
+        workspaceID: workspace.id,
+        relativePath: "Sources/OrchardCompanionApp",
+        cwd: workspace.rootPath + "/Sources/OrchardCompanionApp",
+        status: .running,
+        createdAt: now.addingTimeInterval(-1_200),
+        updatedAt: now.addingTimeInterval(-40),
+        startedAt: now.addingTimeInterval(-1_120),
+        endedAt: nil,
+        exitCode: nil,
+        summary: "正在切换概览和详情页到 managed runs。",
+        pid: 48211,
+        lastHeartbeatAt: now.addingTimeInterval(-18),
+        codexSessionID: nil,
+        lastUserPrompt: "把控制面的运行真相切到 managed runs。"
+    )
+
+    static let failedManagedRun = ManagedRunSummary(
+        id: "run-failed-002",
+        taskID: failedTask.id,
+        deviceID: onlineDevice.deviceID,
+        deviceName: onlineDevice.name,
+        title: "补齐重连恢复链路",
+        driver: .codexCLI,
+        workspaceID: workspace.id,
+        relativePath: "Tests",
+        cwd: workspace.rootPath + "/Tests",
+        status: .failed,
+        createdAt: now.addingTimeInterval(-4_800),
+        updatedAt: now.addingTimeInterval(-240),
+        startedAt: now.addingTimeInterval(-4_700),
+        endedAt: now.addingTimeInterval(-240),
+        exitCode: 1,
+        summary: "旧的 stop 链路会提前打死 wrapper，导致恢复后无法正确收尾。",
+        pid: nil,
+        lastHeartbeatAt: now.addingTimeInterval(-260),
+        codexSessionID: nil,
+        lastUserPrompt: "把 agent 重启恢复测试补上并修到通过。"
+    )
+
+    static let queuedManagedRun = ManagedRunSummary(
+        id: "run-queued-003",
+        taskID: queuedTask.id,
+        deviceID: nil,
+        preferredDeviceID: onlineDevice.deviceID,
+        deviceName: nil,
+        title: "接入移动端停止与重试",
+        driver: .codexCLI,
+        workspaceID: workspace.id,
+        relativePath: "Sources/OrchardCompanionApp",
+        cwd: workspace.rootPath + "/Sources/OrchardCompanionApp",
+        status: .queued,
+        createdAt: now.addingTimeInterval(-160),
+        updatedAt: now.addingTimeInterval(-160),
+        startedAt: nil,
+        endedAt: nil,
+        exitCode: nil,
+        summary: nil,
+        pid: nil,
+        lastHeartbeatAt: nil,
+        codexSessionID: nil,
+        lastUserPrompt: "把移动端最小控制链路补上。"
+    )
+
     static let snapshot = DashboardSnapshot(
         devices: [onlineDevice, offlineDevice],
-        tasks: [failedTask, runningTask, queuedTask]
+        tasks: [failedTask, runningTask, queuedTask],
+        managedRuns: [failedManagedRun, runningManagedRun, queuedManagedRun]
+    )
+
+    static let activeCodexSession = CodexSessionSummary(
+        id: "codex-session-001",
+        deviceID: onlineDevice.deviceID,
+        deviceName: onlineDevice.name,
+        workspaceID: workspace.id,
+        name: "整理 Orchard 的远程控制方案",
+        preview: "我现在所有的任务都是基于 codex 来发起的，希望移动端能够持续监控。",
+        cwd: workspace.rootPath,
+        source: "vscode",
+        modelProvider: "openai",
+        createdAt: now.addingTimeInterval(-1_800),
+        updatedAt: now.addingTimeInterval(-20),
+        state: .running,
+        lastTurnID: "turn-active-001",
+        lastTurnStatus: "inProgress",
+        lastUserMessage: "帮我把 Codex 会话接到 Orchard 里。",
+        lastAssistantMessage: "我正在整理控制面和移动端的对接方案。"
+    )
+
+    static let finishedCodexSession = CodexSessionSummary(
+        id: "codex-session-002",
+        deviceID: onlineDevice.deviceID,
+        deviceName: onlineDevice.name,
+        workspaceID: workspace.id,
+        name: "修复 Orchard 中文首页",
+        preview: "把网页和 App 的中文文案统一。",
+        cwd: workspace.rootPath,
+        source: "exec",
+        modelProvider: "openai",
+        createdAt: now.addingTimeInterval(-7_200),
+        updatedAt: now.addingTimeInterval(-1_200),
+        state: .completed,
+        lastTurnID: "turn-done-001",
+        lastTurnStatus: "completed",
+        lastUserMessage: "把网页和 App 全部中文化。",
+        lastAssistantMessage: "已经完成中文文案统一。"
+    )
+
+    static let activeCodexSessionDetail = CodexSessionDetail(
+        session: activeCodexSession,
+        turns: [
+            CodexSessionTurn(id: "turn-active-001", status: "inProgress"),
+        ],
+        items: [
+            CodexSessionItem(
+                id: "item-user-1",
+                turnID: "turn-active-001",
+                sequence: 0,
+                kind: .userMessage,
+                title: "用户",
+                body: "帮我把 Codex 会话接到 Orchard 里。"
+            ),
+            CodexSessionItem(
+                id: "item-agent-1",
+                turnID: "turn-active-001",
+                sequence: 1,
+                kind: .agentMessage,
+                title: "Codex",
+                body: "我正在整理控制面和移动端的对接方案。"
+            ),
+            CodexSessionItem(
+                id: "item-cmd-1",
+                turnID: "turn-active-001",
+                sequence: 2,
+                kind: .commandExecution,
+                title: "codex app-server --help",
+                body: "Usage: codex app-server [OPTIONS] [COMMAND]",
+                status: "completed"
+            ),
+        ]
     )
 
     static let failedTaskDetail = TaskDetail(
@@ -144,7 +295,12 @@ enum CompanionPreviewData {
 
     @MainActor
     static var model: AppModel {
-        AppModel.preview(snapshot: snapshot, errorMessage: nil, lastRefreshAt: now.addingTimeInterval(-30))
+        AppModel.preview(
+            snapshot: snapshot,
+            codexSessions: [activeCodexSession, finishedCodexSession],
+            errorMessage: nil,
+            lastRefreshAt: now.addingTimeInterval(-30)
+        )
     }
 }
 
@@ -152,11 +308,13 @@ enum CompanionPreviewData {
 extension AppModel {
     static func preview(
         snapshot: DashboardSnapshot,
+        codexSessions: [CodexSessionSummary] = [],
         errorMessage: String? = nil,
         lastRefreshAt: Date? = nil
     ) -> AppModel {
         let model = AppModel()
         model.snapshot = snapshot
+        model.codexSessions = codexSessions
         model.errorMessage = errorMessage
         model.lastRefreshAt = lastRefreshAt
         return model

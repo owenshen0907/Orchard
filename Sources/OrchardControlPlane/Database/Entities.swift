@@ -284,3 +284,227 @@ final class TaskLogModel: Model, @unchecked Sendable {
         )
     }
 }
+
+final class ManagedRunModel: Model, @unchecked Sendable {
+    static let schema = "managed_runs"
+
+    @ID(custom: "run_id", generatedBy: .user)
+    var id: String?
+
+    @OptionalField(key: "task_id")
+    var taskID: String?
+
+    @OptionalField(key: "device_id")
+    var deviceID: String?
+
+    @Field(key: "title")
+    var title: String
+
+    @Field(key: "driver")
+    var driverRaw: String
+
+    @Field(key: "workspace_id")
+    var workspaceID: String
+
+    @OptionalField(key: "relative_path")
+    var relativePath: String?
+
+    @Field(key: "prompt")
+    var prompt: String
+
+    @OptionalField(key: "cwd")
+    var cwd: String?
+
+    @Field(key: "status")
+    var statusRaw: String
+
+    @Field(key: "created_at")
+    var createdAt: Date
+
+    @Field(key: "updated_at")
+    var updatedAt: Date
+
+    @OptionalField(key: "started_at")
+    var startedAt: Date?
+
+    @OptionalField(key: "ended_at")
+    var endedAt: Date?
+
+    @OptionalField(key: "exit_code")
+    var exitCode: Int?
+
+    @OptionalField(key: "summary")
+    var summary: String?
+
+    @OptionalField(key: "pid")
+    var pid: Int?
+
+    @OptionalField(key: "last_heartbeat_at")
+    var lastHeartbeatAt: Date?
+
+    @OptionalField(key: "codex_session_id")
+    var codexSessionID: String?
+
+    @OptionalField(key: "last_user_prompt")
+    var lastUserPrompt: String?
+
+    @OptionalField(key: "last_assistant_preview")
+    var lastAssistantPreview: String?
+
+    init() {}
+
+    init(runID: String, request: CreateManagedRunRequest, taskID: String?, now: Date) {
+        self.id = runID
+        self.taskID = taskID
+        self.deviceID = nil
+        self.title = request.title
+        self.driverRaw = request.driver.rawValue
+        self.workspaceID = request.workspaceID
+        self.relativePath = request.relativePath
+        self.prompt = request.prompt
+        self.cwd = nil
+        self.statusRaw = ManagedRunStatus.queued.rawValue
+        self.createdAt = now
+        self.updatedAt = now
+        self.startedAt = nil
+        self.endedAt = nil
+        self.exitCode = nil
+        self.summary = nil
+        self.pid = nil
+        self.lastHeartbeatAt = nil
+        self.codexSessionID = nil
+        self.lastUserPrompt = request.prompt
+        self.lastAssistantPreview = nil
+    }
+
+    var runID: String {
+        id ?? ""
+    }
+
+    var driver: ManagedRunDriver {
+        get { ManagedRunDriver(rawValue: driverRaw) ?? .codexCLI }
+        set { driverRaw = newValue.rawValue }
+    }
+
+    var status: ManagedRunStatus {
+        get { ManagedRunStatus(rawValue: statusRaw) ?? .failed }
+        set { statusRaw = newValue.rawValue }
+    }
+
+    func toSummary(deviceName: String?, preferredDeviceID: String? = nil) -> ManagedRunSummary {
+        ManagedRunSummary(
+            id: runID,
+            taskID: taskID,
+            deviceID: deviceID,
+            preferredDeviceID: preferredDeviceID,
+            deviceName: deviceName,
+            title: title,
+            driver: driver,
+            workspaceID: workspaceID,
+            relativePath: relativePath,
+            cwd: cwd ?? "",
+            status: status,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            exitCode: exitCode,
+            summary: summary,
+            pid: pid,
+            lastHeartbeatAt: lastHeartbeatAt,
+            codexSessionID: codexSessionID,
+            lastUserPrompt: lastUserPrompt,
+            lastAssistantPreview: lastAssistantPreview
+        )
+    }
+}
+
+final class ManagedRunEventModel: Model, @unchecked Sendable {
+    static let schema = "managed_run_events"
+
+    @ID(key: .id)
+    var id: UUID?
+
+    @Field(key: "run_id")
+    var runID: String
+
+    @Field(key: "kind")
+    var kindRaw: String
+
+    @Field(key: "created_at")
+    var createdAt: Date
+
+    @Field(key: "title")
+    var title: String
+
+    @OptionalField(key: "message")
+    var message: String?
+
+    init() {}
+
+    init(runID: String, kind: ManagedRunEventKind, createdAt: Date, title: String, message: String? = nil) {
+        self.runID = runID
+        self.kindRaw = kind.rawValue
+        self.createdAt = createdAt
+        self.title = title
+        self.message = message
+    }
+
+    var kind: ManagedRunEventKind {
+        get { ManagedRunEventKind(rawValue: kindRaw) ?? .finished }
+        set { kindRaw = newValue.rawValue }
+    }
+
+    func toRecord() -> ManagedRunEvent {
+        ManagedRunEvent(
+            id: id?.uuidString.lowercased() ?? UUID().uuidString.lowercased(),
+            runID: runID,
+            kind: kind,
+            createdAt: createdAt,
+            title: title,
+            message: message
+        )
+    }
+}
+
+final class ManagedRunLogModel: Model, @unchecked Sendable {
+    static let schema = "managed_run_logs"
+
+    @ID(key: .id)
+    var id: UUID?
+
+    @Field(key: "run_id")
+    var runID: String
+
+    @Field(key: "device_id")
+    var deviceID: String
+
+    @Field(key: "created_at")
+    var createdAt: Date
+
+    @OptionalField(key: "sequence")
+    var sequence: Int?
+
+    @Field(key: "line")
+    var line: String
+
+    init() {}
+
+    init(runID: String, deviceID: String, createdAt: Date, sequence: Int?, line: String) {
+        self.runID = runID
+        self.deviceID = deviceID
+        self.createdAt = createdAt
+        self.sequence = sequence
+        self.line = line
+    }
+
+    func toRecord() -> ManagedRunLogEntry {
+        ManagedRunLogEntry(
+            id: id?.uuidString.lowercased() ?? UUID().uuidString.lowercased(),
+            runID: runID,
+            deviceID: deviceID,
+            createdAt: createdAt,
+            line: line
+        )
+    }
+}

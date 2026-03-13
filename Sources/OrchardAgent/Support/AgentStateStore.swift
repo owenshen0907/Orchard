@@ -6,6 +6,11 @@ private struct PersistedAgentState: Codable, Sendable {
     var pendingTaskUpdates: [String: AgentTaskUpdatePayload]
 }
 
+struct AgentBootstrapState: Sendable {
+    var activeTaskIDs: [String]
+    var pendingTaskUpdates: [AgentTaskUpdatePayload]
+}
+
 actor AgentStateStore {
     private let url: URL
 
@@ -13,20 +18,14 @@ actor AgentStateStore {
         self.url = url
     }
 
-    func bootstrap() throws -> [AgentTaskUpdatePayload] {
-        var state = try loadState()
-        for taskID in state.activeTaskIDs {
-            state.pendingTaskUpdates[taskID] = AgentTaskUpdatePayload(
-                taskID: taskID,
-                status: .failed,
-                summary: "agent restarted"
-            )
-        }
-        state.activeTaskIDs = []
-        try saveState(state)
-        return state.pendingTaskUpdates.values.sorted { lhs, rhs in
-            lhs.taskID < rhs.taskID
-        }
+    func bootstrap() throws -> AgentBootstrapState {
+        let state = try loadState()
+        return AgentBootstrapState(
+            activeTaskIDs: state.activeTaskIDs.sorted(),
+            pendingTaskUpdates: state.pendingTaskUpdates.values.sorted { lhs, rhs in
+                lhs.taskID < rhs.taskID
+            }
+        )
     }
 
     func markTaskStarted(_ taskID: String) throws {

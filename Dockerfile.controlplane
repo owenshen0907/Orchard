@@ -1,0 +1,11 @@
+FROM swift:6.0-jammy
+
+WORKDIR /app
+COPY . .
+
+RUN swift build -c release --product OrchardControlPlane
+
+ENV ORCHARD_BIND=0.0.0.0
+ENV ORCHARD_PORT=8080
+
+CMD [".build/release/OrchardControlPlane"]

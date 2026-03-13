@@ -50,6 +50,118 @@ public struct OrchardAPIClient: @unchecked Sendable {
         try await get("api/tasks/\(taskID)")
     }
 
+    public func fetchManagedRuns(
+        deviceID: String? = nil,
+        limit: Int? = nil,
+        statuses: [ManagedRunStatus] = []
+    ) async throws -> [ManagedRunSummary] {
+        var components = URLComponents()
+        var items: [URLQueryItem] = []
+        if let deviceID, !deviceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            items.append(URLQueryItem(name: "deviceID", value: deviceID))
+        }
+        if let limit {
+            items.append(URLQueryItem(name: "limit", value: String(limit)))
+        }
+        if !statuses.isEmpty {
+            items.append(URLQueryItem(name: "status", value: statuses.map(\.rawValue).joined(separator: ",")))
+        }
+        components.queryItems = items.isEmpty ? nil : items
+        let query = components.percentEncodedQuery.map { "?\($0)" } ?? ""
+        return try await get("api/runs\(query)")
+    }
+
+    public func fetchManagedRunDetail(runID: String) async throws -> ManagedRunDetail {
+        try await get("api/runs/\(runID)")
+    }
+
+    public func createManagedRun(_ request: CreateManagedRunRequest) async throws -> ManagedRunSummary {
+        try await post("api/runs", body: request)
+    }
+
+    public func continueManagedRun(runID: String, prompt: String) async throws -> ManagedRunDetail {
+        try await post(
+            "api/runs/\(runID)/continue",
+            body: ManagedRunContinueRequest(prompt: prompt)
+        )
+    }
+
+    public func interruptManagedRun(runID: String) async throws -> ManagedRunDetail {
+        try await post(
+            "api/runs/\(runID)/interrupt",
+            body: ManagedRunInterruptRequest()
+        )
+    }
+
+    public func stopManagedRun(runID: String, reason: String? = nil) async throws -> ManagedRunSummary {
+        try await post(
+            "api/runs/\(runID)/stop",
+            body: ManagedRunStopRequest(reason: reason)
+        )
+    }
+
+    public func retryManagedRun(runID: String, prompt: String? = nil) async throws -> ManagedRunSummary {
+        try await post(
+            "api/runs/\(runID)/retry",
+            body: ManagedRunRetryRequest(prompt: prompt)
+        )
+    }
+
+    public func fetchCodexSessions(deviceID: String? = nil, limit: Int? = nil) async throws -> [CodexSessionSummary] {
+        var components = URLComponents()
+        var items: [URLQueryItem] = []
+        if let deviceID, !deviceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            items.append(URLQueryItem(name: "deviceID", value: deviceID))
+        }
+        if let limit {
+            items.append(URLQueryItem(name: "limit", value: String(limit)))
+        }
+        components.queryItems = items.isEmpty ? nil : items
+        let query = components.percentEncodedQuery.map { "?\($0)" } ?? ""
+        return try await get("api/codex/sessions\(query)")
+    }
+
+    public func fetchCodexSessionDetail(deviceID: String, sessionID: String) async throws -> CodexSessionDetail {
+        try await get("api/devices/\(deviceID)/codex/sessions/\(sessionID)")
+    }
+
+    public func fetchProjectContextSummary(
+        deviceID: String,
+        workspaceID: String
+    ) async throws -> AgentProjectContextCommandResponse {
+        try await get("api/devices/\(deviceID)/workspaces/\(workspaceID)/project-context")
+    }
+
+    public func lookupProjectContext(
+        deviceID: String,
+        workspaceID: String,
+        subject: ProjectContextRemoteSubject,
+        selector: String? = nil
+    ) async throws -> AgentProjectContextCommandResponse {
+        var components = URLComponents()
+        var items = [URLQueryItem(name: "subject", value: subject.rawValue)]
+        if let selector, !selector.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            items.append(URLQueryItem(name: "selector", value: selector))
+        }
+        components.queryItems = items
+        let query = components.percentEncodedQuery.map { "?\($0)" } ?? ""
+        return try await get("api/devices/\(deviceID)/workspaces/\(workspaceID)/project-context/lookup\(query)")
+    }
+
+    public func continueCodexSession(deviceID: String, sessionID: String, prompt: String) async throws -> CodexSessionDetail {
+        try await post(
+            "api/devices/\(deviceID)/codex/sessions/\(sessionID)/continue",
+            body: CodexSessionContinueRequest(prompt: prompt)
+        )
+    }
+
+    public func interruptCodexSession(deviceID: String, sessionID: String) async throws -> CodexSessionDetail {
+        try await post(
+            "api/devices/\(deviceID)/codex/sessions/\(sessionID)/interrupt",
+            body: CodexSessionInterruptRequest()
+        )
+    }
+
     public func registerAgent(_ registration: AgentRegistrationRequest) async throws -> DeviceRecord {
         try await post("api/agents/register", body: registration)
     }

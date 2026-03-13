@@ -6,6 +6,7 @@ struct AgentInitConfigOptions: Sendable {
     var configURL: URL
     var serverURLString: String
     var enrollmentToken: String
+    var controlPlaneAccessKey: String?
     var deviceID: String
     var deviceName: String
     var workspaceRootPath: String
@@ -14,6 +15,9 @@ struct AgentInitConfigOptions: Sendable {
     var maxParallelTasks: Int
     var heartbeatIntervalSeconds: Int
     var codexBinaryPath: String
+    var localStatusPageEnabled: Bool
+    var localStatusPageHost: String
+    var localStatusPagePort: Int
     var overwrite: Bool
 
     init(
@@ -27,6 +31,7 @@ struct AgentInitConfigOptions: Sendable {
         self.configURL = try configURL ?? OrchardAgentPaths.configURL()
         self.serverURLString = "http://127.0.0.1:8080"
         self.enrollmentToken = "replace-me"
+        self.controlPlaneAccessKey = nil
         self.deviceID = AgentSetupDefaults.deviceID(for: hostName)
         self.deviceName = hostName.isEmpty ? "Orchard Agent" : hostName
         self.workspaceRootPath = workspaceRootPath
@@ -35,6 +40,9 @@ struct AgentInitConfigOptions: Sendable {
         self.maxParallelTasks = 2
         self.heartbeatIntervalSeconds = 10
         self.codexBinaryPath = ExecutableLocator.preferredCodexPath() ?? "codex"
+        self.localStatusPageEnabled = true
+        self.localStatusPageHost = "127.0.0.1"
+        self.localStatusPagePort = 5419
         self.overwrite = false
     }
 }
@@ -177,7 +185,11 @@ enum AgentConfigInitializer {
                 ),
             ],
             heartbeatIntervalSeconds: options.heartbeatIntervalSeconds,
-            codexBinaryPath: options.codexBinaryPath
+            codexBinaryPath: options.codexBinaryPath,
+            controlPlaneAccessKey: options.controlPlaneAccessKey,
+            localStatusPageEnabled: options.localStatusPageEnabled,
+            localStatusPageHost: options.localStatusPageHost,
+            localStatusPagePort: options.localStatusPagePort
         )
 
         let resolvedConfig = try AgentConfigLoader.validate(file: file)

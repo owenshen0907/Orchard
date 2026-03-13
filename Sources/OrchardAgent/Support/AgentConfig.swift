@@ -10,6 +10,10 @@ struct AgentConfigFile: Codable, Sendable {
     var workspaceRoots: [WorkspaceDefinition]
     var heartbeatIntervalSeconds: Int?
     var codexBinaryPath: String?
+    var controlPlaneAccessKey: String?
+    var localStatusPageEnabled: Bool?
+    var localStatusPageHost: String?
+    var localStatusPagePort: Int?
 
     init(
         serverURL: String,
@@ -19,7 +23,11 @@ struct AgentConfigFile: Codable, Sendable {
         maxParallelTasks: Int?,
         workspaceRoots: [WorkspaceDefinition],
         heartbeatIntervalSeconds: Int?,
-        codexBinaryPath: String?
+        codexBinaryPath: String?,
+        controlPlaneAccessKey: String? = nil,
+        localStatusPageEnabled: Bool? = nil,
+        localStatusPageHost: String? = nil,
+        localStatusPagePort: Int? = nil
     ) {
         self.serverURL = serverURL
         self.enrollmentToken = enrollmentToken
@@ -29,6 +37,10 @@ struct AgentConfigFile: Codable, Sendable {
         self.workspaceRoots = workspaceRoots
         self.heartbeatIntervalSeconds = heartbeatIntervalSeconds
         self.codexBinaryPath = codexBinaryPath
+        self.controlPlaneAccessKey = controlPlaneAccessKey
+        self.localStatusPageEnabled = localStatusPageEnabled
+        self.localStatusPageHost = localStatusPageHost
+        self.localStatusPagePort = localStatusPagePort
     }
 }
 
@@ -42,6 +54,40 @@ struct ResolvedAgentConfig: Sendable {
     var workspaceRoots: [WorkspaceDefinition]
     var heartbeatIntervalSeconds: Int
     var codexBinaryPath: String
+    var controlPlaneAccessKey: String?
+    var localStatusPageEnabled: Bool
+    var localStatusPageHost: String
+    var localStatusPagePort: Int
+
+    init(
+        serverURL: URL,
+        enrollmentToken: String,
+        deviceID: String,
+        deviceName: String,
+        hostName: String,
+        maxParallelTasks: Int,
+        workspaceRoots: [WorkspaceDefinition],
+        heartbeatIntervalSeconds: Int,
+        codexBinaryPath: String,
+        controlPlaneAccessKey: String? = nil,
+        localStatusPageEnabled: Bool = true,
+        localStatusPageHost: String = "127.0.0.1",
+        localStatusPagePort: Int = 5419
+    ) {
+        self.serverURL = serverURL
+        self.enrollmentToken = enrollmentToken
+        self.deviceID = deviceID
+        self.deviceName = deviceName
+        self.hostName = hostName
+        self.maxParallelTasks = maxParallelTasks
+        self.workspaceRoots = workspaceRoots
+        self.heartbeatIntervalSeconds = heartbeatIntervalSeconds
+        self.codexBinaryPath = codexBinaryPath
+        self.controlPlaneAccessKey = controlPlaneAccessKey?.nonEmptyTrimmedValue
+        self.localStatusPageEnabled = localStatusPageEnabled
+        self.localStatusPageHost = localStatusPageHost.nonEmptyTrimmedValue ?? "127.0.0.1"
+        self.localStatusPagePort = min(max(localStatusPagePort, 1), 65535)
+    }
 }
 
 enum OrchardAgentPaths {
@@ -160,6 +206,9 @@ enum AgentConfigLoader {
         }
 
         let codexBinaryPath = file.codexBinaryPath?.trimmedValue.isEmpty == false ? file.codexBinaryPath!.trimmedValue : "codex"
+        let controlPlaneAccessKey = file.controlPlaneAccessKey?.nonEmptyTrimmedValue
+        let localStatusPageHost = file.localStatusPageHost?.nonEmptyTrimmedValue ?? "127.0.0.1"
+        let localStatusPagePort = min(max(file.localStatusPagePort ?? 5419, 1), 65535)
 
         return ResolvedAgentConfig(
             serverURL: serverURL,
@@ -170,7 +219,11 @@ enum AgentConfigLoader {
             maxParallelTasks: min(max(file.maxParallelTasks ?? 2, 1), 3),
             workspaceRoots: try file.workspaceRoots.map(validateWorkspace),
             heartbeatIntervalSeconds: max(5, file.heartbeatIntervalSeconds ?? 10),
-            codexBinaryPath: codexBinaryPath
+            codexBinaryPath: codexBinaryPath,
+            controlPlaneAccessKey: controlPlaneAccessKey,
+            localStatusPageEnabled: file.localStatusPageEnabled ?? true,
+            localStatusPageHost: localStatusPageHost,
+            localStatusPagePort: localStatusPagePort
         )
     }
 
@@ -215,5 +268,10 @@ enum AgentConfigLoader {
 private extension String {
     var trimmedValue: String {
         trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var nonEmptyTrimmedValue: String? {
+        let value = trimmedValue
+        return value.isEmpty ? nil : value
     }
 }

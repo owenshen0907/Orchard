@@ -88,17 +88,45 @@ public struct DeviceMetrics: Codable, Sendable {
     public var memoryPercent: Double?
     public var loadAverage: Double?
     public var runningTasks: Int
+    public var codexDesktop: CodexDesktopMetrics?
 
     public init(
         cpuPercentApprox: Double? = nil,
         memoryPercent: Double? = nil,
         loadAverage: Double? = nil,
-        runningTasks: Int = 0
+        runningTasks: Int = 0,
+        codexDesktop: CodexDesktopMetrics? = nil
     ) {
         self.cpuPercentApprox = cpuPercentApprox
         self.memoryPercent = memoryPercent
         self.loadAverage = loadAverage
         self.runningTasks = runningTasks
+        self.codexDesktop = codexDesktop
+    }
+}
+
+public struct CodexDesktopMetrics: Codable, Sendable {
+    public var activeThreadCount: Int?
+    public var inflightThreadCount: Int?
+    public var inflightTurnCount: Int?
+    public var loadedThreadCount: Int?
+    public var totalThreadCount: Int?
+    public var lastSnapshotAt: Date?
+
+    public init(
+        activeThreadCount: Int? = nil,
+        inflightThreadCount: Int? = nil,
+        inflightTurnCount: Int? = nil,
+        loadedThreadCount: Int? = nil,
+        totalThreadCount: Int? = nil,
+        lastSnapshotAt: Date? = nil
+    ) {
+        self.activeThreadCount = activeThreadCount
+        self.inflightThreadCount = inflightThreadCount
+        self.inflightTurnCount = inflightTurnCount
+        self.loadedThreadCount = loadedThreadCount
+        self.totalThreadCount = totalThreadCount
+        self.lastSnapshotAt = lastSnapshotAt
     }
 }
 
@@ -351,10 +379,552 @@ public struct TaskDetail: Codable, Sendable {
 public struct DashboardSnapshot: Codable, Sendable {
     public var devices: [DeviceRecord]
     public var tasks: [TaskRecord]
+    public var managedRuns: [ManagedRunSummary]
 
-    public init(devices: [DeviceRecord], tasks: [TaskRecord]) {
+    private enum CodingKeys: String, CodingKey {
+        case devices
+        case tasks
+        case managedRuns
+    }
+
+    public init(devices: [DeviceRecord], tasks: [TaskRecord], managedRuns: [ManagedRunSummary] = []) {
         self.devices = devices
         self.tasks = tasks
+        self.managedRuns = managedRuns
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        devices = try container.decodeIfPresent([DeviceRecord].self, forKey: .devices) ?? []
+        tasks = try container.decodeIfPresent([TaskRecord].self, forKey: .tasks) ?? []
+        managedRuns = try container.decodeIfPresent([ManagedRunSummary].self, forKey: .managedRuns) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(devices, forKey: .devices)
+        try container.encode(tasks, forKey: .tasks)
+        try container.encode(managedRuns, forKey: .managedRuns)
+    }
+}
+
+public enum ManagedRunDriver: String, Codable, CaseIterable, Sendable {
+    case codexCLI
+}
+
+public enum ManagedRunStatus: String, Codable, CaseIterable, Sendable {
+    case queued
+    case launching
+    case running
+    case waitingInput
+    case interrupting
+    case stopRequested
+    case succeeded
+    case failed
+    case interrupted
+    case cancelled
+
+    public var isTerminal: Bool {
+        switch self {
+        case .succeeded, .failed, .interrupted, .cancelled:
+            return true
+        case .queued, .launching, .running, .waitingInput, .interrupting, .stopRequested:
+            return false
+        }
+    }
+
+    public var occupiesSlot: Bool {
+        switch self {
+        case .launching, .running, .waitingInput, .interrupting, .stopRequested:
+            return true
+        case .queued, .succeeded, .failed, .interrupted, .cancelled:
+            return false
+        }
+    }
+}
+
+public enum ManagedRunEventKind: String, Codable, CaseIterable, Sendable {
+    case runCreated
+    case launching
+    case started
+    case logChunk
+    case waitingInput
+    case continued
+    case interruptRequested
+    case stopRequested
+    case finished
+    case reattached
+    case agentLost
+}
+
+public struct ManagedRunSummary: Codable, Identifiable, Sendable {
+    public var id: String
+    public var taskID: String?
+    public var deviceID: String?
+    public var preferredDeviceID: String?
+    public var deviceName: String?
+    public var title: String
+    public var driver: ManagedRunDriver
+    public var workspaceID: String
+    public var relativePath: String?
+    public var cwd: String
+    public var status: ManagedRunStatus
+    public var createdAt: Date
+    public var updatedAt: Date
+    public var startedAt: Date?
+    public var endedAt: Date?
+    public var exitCode: Int?
+    public var summary: String?
+    public var pid: Int?
+    public var lastHeartbeatAt: Date?
+    public var codexSessionID: String?
+    public var lastUserPrompt: String?
+    public var lastAssistantPreview: String?
+
+    public init(
+        id: String,
+        taskID: String? = nil,
+        deviceID: String? = nil,
+        preferredDeviceID: String? = nil,
+        deviceName: String? = nil,
+        title: String,
+        driver: ManagedRunDriver,
+        workspaceID: String,
+        relativePath: String? = nil,
+        cwd: String,
+        status: ManagedRunStatus,
+        createdAt: Date,
+        updatedAt: Date,
+        startedAt: Date? = nil,
+        endedAt: Date? = nil,
+        exitCode: Int? = nil,
+        summary: String? = nil,
+        pid: Int? = nil,
+        lastHeartbeatAt: Date? = nil,
+        codexSessionID: String? = nil,
+        lastUserPrompt: String? = nil,
+        lastAssistantPreview: String? = nil
+    ) {
+        self.id = id
+        self.taskID = taskID
+        self.deviceID = deviceID
+        self.preferredDeviceID = preferredDeviceID
+        self.deviceName = deviceName
+        self.title = title
+        self.driver = driver
+        self.workspaceID = workspaceID
+        self.relativePath = relativePath
+        self.cwd = cwd
+        self.status = status
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.exitCode = exitCode
+        self.summary = summary
+        self.pid = pid
+        self.lastHeartbeatAt = lastHeartbeatAt
+        self.codexSessionID = codexSessionID
+        self.lastUserPrompt = lastUserPrompt
+        self.lastAssistantPreview = lastAssistantPreview
+    }
+}
+
+public struct ManagedRunEvent: Codable, Identifiable, Sendable {
+    public var id: String
+    public var runID: String
+    public var kind: ManagedRunEventKind
+    public var createdAt: Date
+    public var title: String
+    public var message: String?
+
+    public init(
+        id: String,
+        runID: String,
+        kind: ManagedRunEventKind,
+        createdAt: Date,
+        title: String,
+        message: String? = nil
+    ) {
+        self.id = id
+        self.runID = runID
+        self.kind = kind
+        self.createdAt = createdAt
+        self.title = title
+        self.message = message
+    }
+}
+
+public struct ManagedRunLogEntry: Codable, Identifiable, Sendable {
+    public var id: String
+    public var runID: String
+    public var deviceID: String
+    public var createdAt: Date
+    public var line: String
+
+    public init(id: String, runID: String, deviceID: String, createdAt: Date, line: String) {
+        self.id = id
+        self.runID = runID
+        self.deviceID = deviceID
+        self.createdAt = createdAt
+        self.line = line
+    }
+}
+
+public struct ManagedRunDetail: Codable, Sendable {
+    public var run: ManagedRunSummary
+    public var events: [ManagedRunEvent]
+    public var logs: [ManagedRunLogEntry]
+
+    public init(run: ManagedRunSummary, events: [ManagedRunEvent], logs: [ManagedRunLogEntry]) {
+        self.run = run
+        self.events = events
+        self.logs = logs
+    }
+}
+
+public struct CreateManagedRunRequest: Codable, Sendable {
+    public var title: String
+    public var workspaceID: String
+    public var relativePath: String?
+    public var preferredDeviceID: String?
+    public var driver: ManagedRunDriver
+    public var prompt: String
+
+    public init(
+        title: String,
+        workspaceID: String,
+        relativePath: String? = nil,
+        preferredDeviceID: String? = nil,
+        driver: ManagedRunDriver = .codexCLI,
+        prompt: String
+    ) {
+        self.title = title
+        self.workspaceID = workspaceID
+        self.relativePath = relativePath
+        self.preferredDeviceID = preferredDeviceID
+        self.driver = driver
+        self.prompt = prompt
+    }
+}
+
+public struct ManagedRunContinueRequest: Codable, Sendable {
+    public var prompt: String
+
+    public init(prompt: String) {
+        self.prompt = prompt
+    }
+}
+
+public struct ManagedRunInterruptRequest: Codable, Sendable {
+    public init() {}
+}
+
+public struct ManagedRunStopRequest: Codable, Sendable {
+    public var reason: String?
+
+    public init(reason: String? = nil) {
+        self.reason = reason
+    }
+}
+
+public struct ManagedRunRetryRequest: Codable, Sendable {
+    public var prompt: String?
+
+    public init(prompt: String? = nil) {
+        self.prompt = prompt
+    }
+}
+
+public enum CodexSessionState: String, Codable, CaseIterable, Sendable {
+    case running
+    case idle
+    case completed
+    case failed
+    case interrupted
+    case unknown
+}
+
+public enum CodexSessionItemKind: String, Codable, CaseIterable, Sendable {
+    case userMessage
+    case agentMessage
+    case plan
+    case reasoning
+    case commandExecution
+    case fileChange
+    case webSearch
+    case other
+}
+
+public struct CodexSessionSummary: Codable, Identifiable, Sendable {
+    public var id: String
+    public var deviceID: String
+    public var deviceName: String
+    public var workspaceID: String?
+    public var name: String?
+    public var preview: String
+    public var cwd: String
+    public var source: String
+    public var modelProvider: String
+    public var createdAt: Date
+    public var updatedAt: Date
+    public var state: CodexSessionState
+    public var lastTurnID: String?
+    public var lastTurnStatus: String?
+    public var lastUserMessage: String?
+    public var lastAssistantMessage: String?
+
+    public init(
+        id: String,
+        deviceID: String,
+        deviceName: String,
+        workspaceID: String? = nil,
+        name: String? = nil,
+        preview: String,
+        cwd: String,
+        source: String,
+        modelProvider: String,
+        createdAt: Date,
+        updatedAt: Date,
+        state: CodexSessionState,
+        lastTurnID: String? = nil,
+        lastTurnStatus: String? = nil,
+        lastUserMessage: String? = nil,
+        lastAssistantMessage: String? = nil
+    ) {
+        self.id = id
+        self.deviceID = deviceID
+        self.deviceName = deviceName
+        self.workspaceID = workspaceID
+        self.name = name
+        self.preview = preview
+        self.cwd = cwd
+        self.source = source
+        self.modelProvider = modelProvider
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.state = state
+        self.lastTurnID = lastTurnID
+        self.lastTurnStatus = lastTurnStatus
+        self.lastUserMessage = lastUserMessage
+        self.lastAssistantMessage = lastAssistantMessage
+    }
+}
+
+public struct CodexSessionTurn: Codable, Identifiable, Sendable {
+    public var id: String
+    public var status: String
+    public var errorMessage: String?
+
+    public init(id: String, status: String, errorMessage: String? = nil) {
+        self.id = id
+        self.status = status
+        self.errorMessage = errorMessage
+    }
+}
+
+public struct CodexSessionItem: Codable, Identifiable, Sendable {
+    public var id: String
+    public var turnID: String
+    public var sequence: Int
+    public var kind: CodexSessionItemKind
+    public var title: String
+    public var body: String?
+    public var status: String?
+
+    public init(
+        id: String,
+        turnID: String,
+        sequence: Int,
+        kind: CodexSessionItemKind,
+        title: String,
+        body: String? = nil,
+        status: String? = nil
+    ) {
+        self.id = id
+        self.turnID = turnID
+        self.sequence = sequence
+        self.kind = kind
+        self.title = title
+        self.body = body
+        self.status = status
+    }
+}
+
+public struct CodexSessionDetail: Codable, Sendable {
+    public var session: CodexSessionSummary
+    public var turns: [CodexSessionTurn]
+    public var items: [CodexSessionItem]
+
+    public init(session: CodexSessionSummary, turns: [CodexSessionTurn], items: [CodexSessionItem]) {
+        self.session = session
+        self.turns = turns
+        self.items = items
+    }
+}
+
+public struct CodexSessionContinueRequest: Codable, Sendable {
+    public var prompt: String
+
+    public init(prompt: String) {
+        self.prompt = prompt
+    }
+}
+
+public struct CodexSessionInterruptRequest: Codable, Sendable {
+    public init() {}
+}
+
+public enum AgentCodexCommandAction: String, Codable, CaseIterable, Sendable {
+    case listSessions
+    case readSession
+    case continueSession
+    case interruptSession
+}
+
+public struct AgentCodexCommandRequest: Codable, Sendable {
+    public var requestID: String
+    public var action: AgentCodexCommandAction
+    public var sessionID: String?
+    public var prompt: String?
+    public var limit: Int?
+
+    public init(
+        requestID: String,
+        action: AgentCodexCommandAction,
+        sessionID: String? = nil,
+        prompt: String? = nil,
+        limit: Int? = nil
+    ) {
+        self.requestID = requestID
+        self.action = action
+        self.sessionID = sessionID
+        self.prompt = prompt
+        self.limit = limit
+    }
+}
+
+public struct AgentCodexCommandResponse: Codable, Sendable {
+    public var requestID: String
+    public var sessions: [CodexSessionSummary]?
+    public var detail: CodexSessionDetail?
+    public var errorMessage: String?
+
+    public init(
+        requestID: String,
+        sessions: [CodexSessionSummary]? = nil,
+        detail: CodexSessionDetail? = nil,
+        errorMessage: String? = nil
+    ) {
+        self.requestID = requestID
+        self.sessions = sessions
+        self.detail = detail
+        self.errorMessage = errorMessage
+    }
+}
+
+public enum ProjectContextRemoteSubject: String, Codable, CaseIterable, Sendable, Hashable {
+    case environment
+    case host
+    case service
+    case database
+    case command
+    case credential
+}
+
+public struct ProjectContextRemoteSummary: Codable, Sendable {
+    public var projectID: String
+    public var projectName: String
+    public var summary: String?
+    public var workspaceID: String?
+    public var localSecretsPresent: Bool
+    public var renderedLines: [String]
+
+    public init(
+        projectID: String,
+        projectName: String,
+        summary: String? = nil,
+        workspaceID: String? = nil,
+        localSecretsPresent: Bool,
+        renderedLines: [String]
+    ) {
+        self.projectID = projectID
+        self.projectName = projectName
+        self.summary = summary
+        self.workspaceID = workspaceID
+        self.localSecretsPresent = localSecretsPresent
+        self.renderedLines = renderedLines
+    }
+}
+
+public struct ProjectContextRemoteLookupResult: Codable, Sendable {
+    public var subject: ProjectContextRemoteSubject
+    public var selector: String?
+    public var renderedLines: [String]
+    public var payloadJSON: String?
+
+    public init(
+        subject: ProjectContextRemoteSubject,
+        selector: String? = nil,
+        renderedLines: [String],
+        payloadJSON: String? = nil
+    ) {
+        self.subject = subject
+        self.selector = selector
+        self.renderedLines = renderedLines
+        self.payloadJSON = payloadJSON
+    }
+}
+
+public enum AgentProjectContextCommandAction: String, Codable, CaseIterable, Sendable {
+    case summary
+    case lookup
+}
+
+public struct AgentProjectContextCommandRequest: Codable, Sendable {
+    public var requestID: String
+    public var action: AgentProjectContextCommandAction
+    public var workspaceID: String
+    public var subject: ProjectContextRemoteSubject?
+    public var selector: String?
+
+    public init(
+        requestID: String,
+        action: AgentProjectContextCommandAction,
+        workspaceID: String,
+        subject: ProjectContextRemoteSubject? = nil,
+        selector: String? = nil
+    ) {
+        self.requestID = requestID
+        self.action = action
+        self.workspaceID = workspaceID
+        self.subject = subject
+        self.selector = selector
+    }
+}
+
+public struct AgentProjectContextCommandResponse: Codable, Sendable {
+    public var requestID: String
+    public var workspaceID: String
+    public var available: Bool
+    public var summary: ProjectContextRemoteSummary?
+    public var lookup: ProjectContextRemoteLookupResult?
+    public var errorMessage: String?
+
+    public init(
+        requestID: String,
+        workspaceID: String,
+        available: Bool,
+        summary: ProjectContextRemoteSummary? = nil,
+        lookup: ProjectContextRemoteLookupResult? = nil,
+        errorMessage: String? = nil
+    ) {
+        self.requestID = requestID
+        self.workspaceID = workspaceID
+        self.available = available
+        self.summary = summary
+        self.lookup = lookup
+        self.errorMessage = errorMessage
     }
 }
 
@@ -378,10 +948,12 @@ public struct TaskStopCommand: Codable, Sendable {
 
 public struct AgentHelloPayload: Codable, Sendable {
     public var sentAt: Date
+    public var metrics: DeviceMetrics?
     public var runningTaskIDs: [String]
 
-    public init(sentAt: Date = Date(), runningTaskIDs: [String]) {
+    public init(sentAt: Date = Date(), metrics: DeviceMetrics? = nil, runningTaskIDs: [String]) {
         self.sentAt = sentAt
+        self.metrics = metrics
         self.runningTaskIDs = runningTaskIDs
     }
 }
@@ -413,12 +985,32 @@ public struct AgentTaskUpdatePayload: Codable, Sendable {
     public var status: TaskStatus
     public var exitCode: Int?
     public var summary: String?
+    public var managedRunStatus: ManagedRunStatus?
+    public var pid: Int?
+    public var codexSessionID: String?
+    public var lastUserPrompt: String?
+    public var lastAssistantPreview: String?
 
-    public init(taskID: String, status: TaskStatus, exitCode: Int? = nil, summary: String? = nil) {
+    public init(
+        taskID: String,
+        status: TaskStatus,
+        exitCode: Int? = nil,
+        summary: String? = nil,
+        managedRunStatus: ManagedRunStatus? = nil,
+        pid: Int? = nil,
+        codexSessionID: String? = nil,
+        lastUserPrompt: String? = nil,
+        lastAssistantPreview: String? = nil
+    ) {
         self.taskID = taskID
         self.status = status
         self.exitCode = exitCode
         self.summary = summary
+        self.managedRunStatus = managedRunStatus
+        self.pid = pid
+        self.codexSessionID = codexSessionID
+        self.lastUserPrompt = lastUserPrompt
+        self.lastAssistantPreview = lastAssistantPreview
     }
 }
 
@@ -427,6 +1019,8 @@ public enum AgentSocketMessage: Codable, Sendable {
     case heartbeat(AgentHeartbeatPayload)
     case logBatch(AgentLogBatchPayload)
     case taskUpdate(AgentTaskUpdatePayload)
+    case codexCommandResult(AgentCodexCommandResponse)
+    case projectContextCommandResult(AgentProjectContextCommandResponse)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -438,6 +1032,8 @@ public enum AgentSocketMessage: Codable, Sendable {
         case heartbeat
         case logBatch
         case taskUpdate
+        case codexCommandResult
+        case projectContextCommandResult
     }
 
     public init(from decoder: Decoder) throws {
@@ -452,6 +1048,10 @@ public enum AgentSocketMessage: Codable, Sendable {
             self = .logBatch(try container.decode(AgentLogBatchPayload.self, forKey: .payload))
         case .taskUpdate:
             self = .taskUpdate(try container.decode(AgentTaskUpdatePayload.self, forKey: .payload))
+        case .codexCommandResult:
+            self = .codexCommandResult(try container.decode(AgentCodexCommandResponse.self, forKey: .payload))
+        case .projectContextCommandResult:
+            self = .projectContextCommandResult(try container.decode(AgentProjectContextCommandResponse.self, forKey: .payload))
         }
     }
 
@@ -470,6 +1070,12 @@ public enum AgentSocketMessage: Codable, Sendable {
         case let .taskUpdate(payload):
             try container.encode(MessageType.taskUpdate, forKey: .type)
             try container.encode(payload, forKey: .payload)
+        case let .codexCommandResult(payload):
+            try container.encode(MessageType.codexCommandResult, forKey: .type)
+            try container.encode(payload, forKey: .payload)
+        case let .projectContextCommandResult(payload):
+            try container.encode(MessageType.projectContextCommandResult, forKey: .type)
+            try container.encode(payload, forKey: .payload)
         }
     }
 }
@@ -477,6 +1083,8 @@ public enum AgentSocketMessage: Codable, Sendable {
 public enum ServerSocketMessage: Codable, Sendable {
     case taskAssigned(TaskRecord)
     case taskStop(TaskStopCommand)
+    case codexCommand(AgentCodexCommandRequest)
+    case projectContextCommand(AgentProjectContextCommandRequest)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -486,6 +1094,8 @@ public enum ServerSocketMessage: Codable, Sendable {
     private enum MessageType: String, Codable {
         case taskAssigned
         case taskStop
+        case codexCommand
+        case projectContextCommand
     }
 
     public init(from decoder: Decoder) throws {
@@ -496,6 +1106,10 @@ public enum ServerSocketMessage: Codable, Sendable {
             self = .taskAssigned(try container.decode(TaskRecord.self, forKey: .payload))
         case .taskStop:
             self = .taskStop(try container.decode(TaskStopCommand.self, forKey: .payload))
+        case .codexCommand:
+            self = .codexCommand(try container.decode(AgentCodexCommandRequest.self, forKey: .payload))
+        case .projectContextCommand:
+            self = .projectContextCommand(try container.decode(AgentProjectContextCommandRequest.self, forKey: .payload))
         }
     }
 
@@ -507,6 +1121,12 @@ public enum ServerSocketMessage: Codable, Sendable {
             try container.encode(task, forKey: .payload)
         case let .taskStop(command):
             try container.encode(MessageType.taskStop, forKey: .type)
+            try container.encode(command, forKey: .payload)
+        case let .codexCommand(command):
+            try container.encode(MessageType.codexCommand, forKey: .type)
+            try container.encode(command, forKey: .payload)
+        case let .projectContextCommand(command):
+            try container.encode(MessageType.projectContextCommand, forKey: .type)
             try container.encode(command, forKey: .payload)
         }
     }
@@ -529,6 +1149,31 @@ extension TaskRecord: Content {}
 extension TaskLogEntry: Content {}
 extension TaskDetail: Content {}
 extension DashboardSnapshot: Content {}
+extension ManagedRunDriver: Content {}
+extension ManagedRunStatus: Content {}
+extension ManagedRunEventKind: Content {}
+extension ManagedRunSummary: Content {}
+extension ManagedRunEvent: Content {}
+extension ManagedRunLogEntry: Content {}
+extension ManagedRunDetail: Content {}
+extension CreateManagedRunRequest: Content {}
+extension ManagedRunContinueRequest: Content {}
+extension ManagedRunInterruptRequest: Content {}
+extension ManagedRunStopRequest: Content {}
+extension ManagedRunRetryRequest: Content {}
+extension CodexSessionSummary: Content {}
+extension CodexSessionTurn: Content {}
+extension CodexSessionItem: Content {}
+extension CodexSessionDetail: Content {}
+extension CodexSessionContinueRequest: Content {}
+extension CodexSessionInterruptRequest: Content {}
+extension AgentCodexCommandRequest: Content {}
+extension AgentCodexCommandResponse: Content {}
+extension ProjectContextRemoteSubject: Content {}
+extension ProjectContextRemoteSummary: Content {}
+extension ProjectContextRemoteLookupResult: Content {}
+extension AgentProjectContextCommandRequest: Content {}
+extension AgentProjectContextCommandResponse: Content {}
 extension StopTaskRequest: Content {}
 extension TaskStopCommand: Content {}
 extension AgentHelloPayload: Content {}

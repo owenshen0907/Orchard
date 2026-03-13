@@ -1,0 +1,234 @@
+{
+  "credentials": [
+    {
+      "appliesToHostIDs": [
+        "aliyun-hangzhou-main"
+      ],
+      "fields": [
+        {
+          "description": "远端登录用户，例如 owenadmin。",
+          "isSensitive": false,
+          "key": "username",
+          "label": "SSH 用户名",
+          "required": true
+        },
+        {
+          "description": "远端 SSH 端口，当前服务器默认使用 322。",
+          "isSensitive": false,
+          "key": "port",
+          "label": "SSH 端口",
+          "required": false
+        },
+        {
+          "description": "本机私钥绝对路径，例如 ~/.ssh/owen_new_ed25519。",
+          "isSensitive": true,
+          "key": "privateKeyPath",
+          "label": "SSH 私钥路径",
+          "required": true
+        }
+      ],
+      "id": "aliyun-deploy-ssh",
+      "kind": "ssh",
+      "name": "阿里云部署 SSH"
+    },
+    {
+      "appliesToServiceIDs": [
+        "orchard-control-plane"
+      ],
+      "fields": [
+        {
+          "description": "用于访问受保护的 OrchardControlPlane API。",
+          "isSensitive": true,
+          "key": "accessKey",
+          "label": "控制面访问密钥",
+          "required": true
+        }
+      ],
+      "id": "orchard-control-plane-api",
+      "kind": "apiKey",
+      "name": "控制面 API 密钥"
+    }
+  ],
+  "databases": [
+    {
+      "credentialIDs": [],
+      "engine": "sqlite",
+      "environmentIDs": [
+        "production"
+      ],
+      "hostID": "aliyun-hangzhou-main",
+      "id": "control-plane-sqlite",
+      "name": "Control Plane SQLite",
+      "notes": [
+        "容器通过 /data 映射到宿主机目录。",
+        "默认数据库文件名由 OrchardControlPlanePaths.databaseURL() 生成。"
+      ],
+      "storagePath": "/home/owenadmin/Orchard/data/control-plane.sqlite"
+    }
+  ],
+  "environments": [
+    {
+      "databaseIDs": [
+        "control-plane-sqlite"
+      ],
+      "deploymentPath": "/home/owenadmin/Orchard",
+      "hostIDs": [
+        "aliyun-hangzhou-main"
+      ],
+      "id": "production",
+      "name": "生产",
+      "notes": [
+        "通过 deploy/deploy-control-plane.sh 使用 Docker 部署。",
+        "远端 env 文件放在仓库之外的 /home/owenadmin/orchard-config/control-plane.env。"
+      ],
+      "serviceIDs": [
+        "orchard-control-plane"
+      ],
+      "urls": [
+        {
+          "label": "主站",
+          "url": "https://orchard.owenshen.top"
+        },
+        {
+          "label": "健康检查",
+          "url": "https://orchard.owenshen.top/health"
+        }
+      ]
+    }
+  ],
+  "hosts": [
+    {
+      "id": "aliyun-hangzhou-main",
+      "name": "阿里云主机",
+      "notes": [
+        "当前承载 OrchardControlPlane。",
+        "域名 orchard.owenshen.top 当前解析到 8.153.75.111。"
+      ],
+      "provider": "aliyun",
+      "publicAddress": "8.153.75.111",
+      "region": "cn-hangzhou",
+      "roles": [
+        "deploy",
+        "app",
+        "database"
+      ]
+    }
+  ],
+  "notes": [
+    "把非敏感的部署事实提交到仓库；密钥和 access key 只放宿主机本地 secrets 文件。",
+    "Codex 或 MCP 侧统一通过 OrchardAgent project-context 命令读取，不直接硬编码服务器信息。"
+  ],
+  "projectID": "orchard",
+  "projectName": "Orchard",
+  "repository": {
+    "defaultBranch": "main",
+    "deployRunbook": "deploy/deploy-control-plane.sh",
+    "gitRemote": "https://github.com/owenshen0907/Orchard.git"
+  },
+  "services": [
+    {
+      "configPath": "/home/owenadmin/orchard-config/control-plane.env",
+      "credentialIDs": [
+        "orchard-control-plane-api"
+      ],
+      "deployPath": "/home/owenadmin/Orchard",
+      "environmentIDs": [
+        "production"
+      ],
+      "healthURL": "https://orchard.owenshen.top/health",
+      "hostID": "aliyun-hangzhou-main",
+      "id": "orchard-control-plane",
+      "kind": "web",
+      "name": "OrchardControlPlane",
+      "notes": [
+        "Docker 容器名 orchard-control-plane。",
+        "Docker 镜像名 orchard-control-plane:latest。",
+        "宿主机 18080 端口映射到容器 8080。"
+      ],
+      "runbook": "deploy/deploy-control-plane.sh"
+    }
+  ],
+  "summary": "Orchard 控制面、Agent 与 Companion 的统一工程。",
+  "version": 1,
+  "workspaceID": "orchard",
+  "commands": [
+    {
+      "id": "deploy-control-plane",
+      "name": "部署控制面",
+      "runner": "local-shell",
+      "command": "./deploy/deploy-control-plane.sh --host 8.153.75.111 --ssh-user \"{{credential.aliyun-deploy-ssh.username}}\" --ssh-port \"{{credential.aliyun-deploy-ssh.port|322}}\" --ssh-key \"{{credential.aliyun-deploy-ssh.privateKeyPath}}\" --remote-dir /home/owenadmin/Orchard --env-file /home/owenadmin/orchard-config/control-plane.env",
+      "workingDirectory": ".",
+      "environmentIDs": [
+        "production"
+      ],
+      "hostID": "aliyun-hangzhou-main",
+      "serviceIDs": [
+        "orchard-control-plane"
+      ],
+      "databaseIDs": [
+        "control-plane-sqlite"
+      ],
+      "credentialIDs": [
+        "aliyun-deploy-ssh"
+      ],
+      "notes": [
+        "命令模板中的 credential 占位符需要在执行前由本机 local secrets 填充。",
+        "部署脚本会使用仓库内 deploy/deploy-control-plane.sh。"
+      ]
+    },
+    {
+      "id": "check-control-plane-health",
+      "name": "检查控制面健康",
+      "runner": "local-shell",
+      "command": "curl --fail --silent --show-error https://orchard.owenshen.top/health",
+      "workingDirectory": ".",
+      "environmentIDs": [
+        "production"
+      ],
+      "serviceIDs": [
+        "orchard-control-plane"
+      ],
+      "notes": [
+        "用于快速确认线上控制面 HTTP 健康检查是否正常。"
+      ]
+    },
+    {
+      "id": "tail-control-plane-logs",
+      "name": "查看控制面日志",
+      "runner": "ssh",
+      "command": "ssh -i \"{{credential.aliyun-deploy-ssh.privateKeyPath}}\" -p \"{{credential.aliyun-deploy-ssh.port|322}}\" \"{{credential.aliyun-deploy-ssh.username}}@8.153.75.111\" 'docker logs --tail 200 -f orchard-control-plane'",
+      "environmentIDs": [
+        "production"
+      ],
+      "hostID": "aliyun-hangzhou-main",
+      "serviceIDs": [
+        "orchard-control-plane"
+      ],
+      "credentialIDs": [
+        "aliyun-deploy-ssh"
+      ],
+      "notes": [
+        "默认跟随最新 200 行日志，可按需改成 journalctl 或 docker compose logs。"
+      ]
+    },
+    {
+      "id": "open-control-plane-env",
+      "name": "查看控制面环境文件",
+      "runner": "ssh",
+      "command": "ssh -i \"{{credential.aliyun-deploy-ssh.privateKeyPath}}\" -p \"{{credential.aliyun-deploy-ssh.port|322}}\" \"{{credential.aliyun-deploy-ssh.username}}@8.153.75.111\" 'sed -n \"1,200p\" /home/owenadmin/orchard-config/control-plane.env'",
+      "environmentIDs": [
+        "production"
+      ],
+      "hostID": "aliyun-hangzhou-main",
+      "serviceIDs": [
+        "orchard-control-plane"
+      ],
+      "credentialIDs": [
+        "aliyun-deploy-ssh"
+      ],
+      "notes": [
+        "只读查看线上 env 文件，不要把真实敏感值回写到仓库。"
+      ]
+    }
+  ]
+}

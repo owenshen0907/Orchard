@@ -26,4 +26,31 @@ final class OrchardCoreTests: XCTestCase {
         let resolved = try OrchardWorkspacePath.resolve(rootPath: "/tmp/workspace", relativePath: "src/module")
         XCTAssertEqual(resolved.path, "/tmp/workspace/src/module")
     }
+
+    func testWorkspaceLocatorMatchesDeepestWorkspaceForPath() {
+        let workspaces = [
+            WorkspaceDefinition(id: "repo", name: "Repo", rootPath: "/tmp/repo"),
+            WorkspaceDefinition(id: "app", name: "App", rootPath: "/tmp/repo/apps/mobile")
+        ]
+
+        let matched = OrchardWorkspaceLocator.bestMatch(
+            for: "/tmp/repo/apps/mobile/Sources",
+            workspaces: workspaces
+        )
+
+        XCTAssertEqual(matched?.id, "app")
+    }
+
+    func testWorkspaceLocatorRejectsPrefixOnlyLookalikes() {
+        let workspaces = [
+            WorkspaceDefinition(id: "repo", name: "Repo", rootPath: "/tmp/repo")
+        ]
+
+        let matched = OrchardWorkspaceLocator.bestMatch(
+            for: "/tmp/repository",
+            workspaces: workspaces
+        )
+
+        XCTAssertNil(matched)
+    }
 }

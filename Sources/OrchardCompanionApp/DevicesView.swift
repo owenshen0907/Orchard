@@ -43,7 +43,9 @@ struct DevicesView: View {
         model.snapshot.devices
             .filter { filter.matches($0) }
             .filter(matchesSearch)
-            .sorted(by: sortDevices)
+            .sorted { lhs, rhs in
+                sortDevices(lhs: lhs, rhs: rhs)
+            }
     }
 
     private var summaryTitle: String {
@@ -56,7 +58,7 @@ struct DevicesView: View {
     private var summaryMessage: String {
         switch filter {
         case .all:
-            return "关注在线率、负载和当前任务数。"
+            return "关注在线率、总运行数和当前负载。"
         case .online:
             return "这些设备当前可以接收任务或正在执行。"
         case .offline:
@@ -91,7 +93,7 @@ struct DevicesView: View {
             return nil
         }
         if searchText.trimmedOrEmpty.isEmpty {
-            return "按当前负载排序"
+            return "按总运行数和当前负载排序"
         }
         return "“\(searchText.trimmedOrEmpty)” 的搜索结果"
     }
@@ -129,9 +131,13 @@ struct DevicesView: View {
                 } else {
                     ForEach(filteredDevices) { device in
                         NavigationLink {
-                            DeviceDetailView(device: device)
+                            DeviceDetailView(model: model, device: device)
                         } label: {
-                            DeviceRow(device: device)
+                            DeviceRow(
+                                device: device,
+                                combinedRunningCount: model.combinedRunningCount(for: device),
+                                codexGapSummary: model.codexDesktopGapSummary(for: device)
+                            )
                         }
                     }
                 }
@@ -176,8 +182,10 @@ struct DevicesView: View {
         if lhs.status != rhs.status {
             return lhs.status == .online
         }
-        if lhs.metrics.runningTasks != rhs.metrics.runningTasks {
-            return lhs.metrics.runningTasks > rhs.metrics.runningTasks
+        let lhsRunning = model.combinedRunningCount(for: lhs)
+        let rhsRunning = model.combinedRunningCount(for: rhs)
+        if lhsRunning != rhsRunning {
+            return lhsRunning > rhsRunning
         }
         if lhs.metrics.loadAverage != rhs.metrics.loadAverage {
             return (lhs.metrics.loadAverage ?? 0) > (rhs.metrics.loadAverage ?? 0)
@@ -188,6 +196,8 @@ struct DevicesView: View {
 
 struct DeviceRow: View {
     let device: DeviceRecord
+    let combinedRunningCount: Int
+    var codexGapSummary: String? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -227,10 +237,22 @@ struct DeviceRow: View {
                         tint: device.statusColor
                     )
                     MetaCapsule(
-                        title: "任务 \(device.metrics.runningTasks)",
+                        title: "总运行 \(combinedRunningCount)",
                         symbolName: "bolt.horizontal",
                         tint: .secondary
                     )
+                }
+
+                if let codexSummary = device.codexDesktopSummaryText {
+                    Text(codexSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let codexGapSummary, !codexGapSummary.isEmpty {
+                    Text(codexGapSummary)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
             }
         }

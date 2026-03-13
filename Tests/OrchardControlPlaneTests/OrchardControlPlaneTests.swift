@@ -23,8 +23,25 @@ final class OrchardControlPlaneTests: XCTestCase {
                 XCTAssertNotNil(body)
                 XCTAssertTrue(body?.contains("Orchard 控制平面") == true)
                 XCTAssertTrue(body?.contains("浏览器控制台") == true)
-                XCTAssertTrue(body?.contains("需要关注的任务") == true)
+                XCTAssertTrue(body?.contains("新建托管 run") == true)
+                XCTAssertTrue(body?.contains("创建并排队") == true)
+                XCTAssertTrue(body?.contains("常用路径") == true)
+                XCTAssertTrue(body?.contains("筛选") == true)
+                XCTAssertTrue(body?.contains("远程指挥台") == true)
+                XCTAssertTrue(body?.contains("Codex 会话") == true)
+                XCTAssertTrue(body?.contains("只统计当前真的在推理或执行的项") == true)
+                XCTAssertTrue(body?.contains("Codex 轻摘要") == true)
+                XCTAssertTrue(body?.contains("桌面活跃线程") == true)
+                XCTAssertTrue(body?.contains("未映射线程") == true)
+                XCTAssertTrue(body?.contains("进行中轮次") == true)
+                XCTAssertTrue(body?.contains("独立任务") == true)
+                XCTAssertTrue(body?.contains("诊断视图") == true)
+                XCTAssertTrue(body?.contains("设备级观测") == true)
+                XCTAssertTrue(body?.contains("继续追问") == true)
+                XCTAssertTrue(body?.contains("项目上下文") == true)
+                XCTAssertTrue(body?.contains("标准操作命令") == true)
                 XCTAssertTrue(body?.contains("/health") == true)
+                XCTAssertTrue(body?.contains("/api/codex/sessions") == true)
             })
         }
     }
@@ -206,6 +223,126 @@ final class OrchardControlPlaneTests: XCTestCase {
                     XCTAssertEqual(detail.task.id, taskID)
                     XCTAssertEqual(detail.task.title, "Persist me")
                     XCTAssertEqual(detail.task.status, .queued)
+                }
+            })
+        }
+    }
+
+    func testManagedRunsCanBeCreatedListedDetailedAndStopped() async throws {
+        let dataDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dataDirectory) }
+
+        try await withTestEnvironment(dataDirectory: dataDirectory) {
+            let app = try await makeOrchardControlPlaneApplication(environment: .testing)
+            defer { Task { try? await app.asyncShutdown() } }
+
+            let create = CreateManagedRunRequest(
+                title: "实现移动端远程继续",
+                workspaceID: "workspace-a",
+                relativePath: "mobile",
+                preferredDeviceID: "mac-1",
+                driver: .codexCLI,
+                prompt: "把移动端继续、中断、停止链路补上"
+            )
+
+            var runID = ""
+            try await app.test(.POST, "/api/runs", beforeRequest: { req async throws in
+                try req.content.encode(create)
+            }, afterResponse: { res async throws in
+                XCTAssertEqual(res.status, .ok)
+                XCTAssertContent(ManagedRunSummary.self, res) { run in
+                    runID = run.id
+                    XCTAssertEqual(run.status, .queued)
+                    XCTAssertEqual(run.driver, .codexCLI)
+                    XCTAssertEqual(run.preferredDeviceID, "mac-1")
+                    XCTAssertEqual(run.lastUserPrompt, "把移动端继续、中断、停止链路补上")
+                    XCTAssertFalse(run.taskID?.isEmpty ?? true)
+                }
+            })
+
+            try await app.test(.GET, "/api/runs", afterResponse: { res async throws in
+                XCTAssertEqual(res.status, .ok)
+                XCTAssertContent([ManagedRunSummary].self, res) { runs in
+                    XCTAssertEqual(runs.count, 1)
+                    XCTAssertEqual(runs.first?.id, runID)
+                    XCTAssertEqual(runs.first?.preferredDeviceID, "mac-1")
+                }
+            })
+
+            try await app.test(.GET, "/api/runs/\(runID)", afterResponse: { res async throws in
+                XCTAssertEqual(res.status, .ok)
+                XCTAssertContent(ManagedRunDetail.self, res) { detail in
+                    XCTAssertEqual(detail.run.id, runID)
+                    XCTAssertEqual(detail.run.preferredDeviceID, "mac-1")
+                    XCTAssertEqual(detail.events.count, 1)
+                    XCTAssertEqual(detail.events.first?.kind, .runCreated)
+                    XCTAssertTrue(detail.logs.isEmpty)
+                }
+            })
+
+            try await app.test(.GET, "/api/snapshot", afterResponse: { res async throws in
+                XCTAssertEqual(res.status, .ok)
+                XCTAssertContent(DashboardSnapshot.self, res) { snapshot in
+                    XCTAssertEqual(snapshot.managedRuns.count, 1)
+                    XCTAssertEqual(snapshot.managedRuns.first?.id, runID)
+                    XCTAssertEqual(snapshot.managedRuns.first?.preferredDeviceID, "mac-1")
+                    XCTAssertEqual(snapshot.tasks.count, 1)
+                }
+            })
+
+            try await app.test(.POST, "/api/runs/\(runID)/stop", beforeRequest: { req async throws in
+                try req.content.encode(ManagedRunStopRequest(reason: "先取消"))
+            }, afterResponse: { res async throws in
+                XCTAssertEqual(res.status, .ok)
+                XCTAssertContent(ManagedRunSummary.self, res) { run in
+                    XCTAssertEqual(run.id, runID)
+                    XCTAssertEqual(run.status, .cancelled)
+                    XCTAssertEqual(run.summary, "先取消")
+                }
+            })
+        }
+    }
+
+    func testManagedRunRetryCreatesNewQueuedRun() async throws {
+        let dataDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dataDirectory) }
+
+        try await withTestEnvironment(dataDirectory: dataDirectory) {
+            let app = try await makeOrchardControlPlaneApplication(environment: .testing)
+            defer { Task { try? await app.asyncShutdown() } }
+
+            let create = CreateManagedRunRequest(
+                title: "原始 run",
+                workspaceID: "workspace-a",
+                driver: .codexCLI,
+                prompt: "先做第一版"
+            )
+
+            var originalRunID = ""
+            try await app.test(.POST, "/api/runs", beforeRequest: { req async throws in
+                try req.content.encode(create)
+            }, afterResponse: { res async throws in
+                XCTAssertEqual(res.status, .ok)
+                XCTAssertContent(ManagedRunSummary.self, res) { run in
+                    originalRunID = run.id
+                }
+            })
+
+            try await app.test(.POST, "/api/runs/\(originalRunID)/retry", beforeRequest: { req async throws in
+                try req.content.encode(ManagedRunRetryRequest(prompt: "重试并补上日志链路"))
+            }, afterResponse: { res async throws in
+                XCTAssertEqual(res.status, .ok)
+                XCTAssertContent(ManagedRunSummary.self, res) { retried in
+                    XCTAssertNotEqual(retried.id, originalRunID)
+                    XCTAssertEqual(retried.status, .queued)
+                    XCTAssertEqual(retried.lastUserPrompt, "重试并补上日志链路")
+                }
+            })
+
+            try await app.test(.GET, "/api/runs?status=queued", afterResponse: { res async throws in
+                XCTAssertEqual(res.status, .ok)
+                XCTAssertContent([ManagedRunSummary].self, res) { runs in
+                    XCTAssertEqual(runs.count, 2)
                 }
             })
         }

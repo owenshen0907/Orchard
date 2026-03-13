@@ -66,6 +66,7 @@ swift run OrchardControlPlane
 - `ORCHARD_PORT`
 - `ORCHARD_DATA_DIR`
 - `ORCHARD_ENROLLMENT_TOKEN`
+- `ORCHARD_ACCESS_KEY`
 
 ### 2. 配置一台 Agent
 
@@ -151,6 +152,112 @@ swift run OrchardAgent install-launch-agent \
 ```
 
 如果你只想先写 plist、不立即 bootstrap，可以加 `--write-only`。
+
+## Control Plane 服务器部署
+
+生产环境建议把 Control Plane 的 env 文件放在仓库同步目录之外，避免 `rsync --delete` 覆盖或删掉线上密钥。
+
+示例 env 文件：
+
+- `deploy/control-plane.env.example`
+
+推荐的远端落点：
+
+- `/home/<user>/orchard-config/control-plane.env`
+
+示例流程：
+
+```bash
+scp -P 322 -i ~/.ssh/owen_new_ed25519 \
+  deploy/control-plane.env.example \
+  owenadmin@8.153.75.111:/home/owenadmin/orchard-config/control-plane.env
+```
+
+编辑好远端 env 后，可直接执行部署脚本：
+
+```bash
+REMOTE_HOST=8.153.75.111 \
+REMOTE_PORT=322 \
+REMOTE_USER=owenadmin \
+SSH_IDENTITY_FILE=~/.ssh/owen_new_ed25519 \
+deploy/deploy-control-plane.sh
+```
+
+脚本会做 4 件事：
+
+- `rsync` 同步仓库，但保留远端 `control-plane.env` 和 `data/`
+- 如仍存在旧的 `/home/<user>/Orchard/control-plane.env`，自动迁移到仓库外
+- 重新 `docker build` `orchard-control-plane:latest`
+- 重启容器并用本机 `http://127.0.0.1:<port>/health` 做健康检查
+
+## 项目上下文与宿主机密钥
+
+为了让 Codex / MCP / 自动化任务稳定找到项目部署信息，这个仓库现在约定两层资料：
+
+- 仓库内公开事实：`.orchard/project-context.json`
+- 每台宿主机本地密钥：`~/Library/Application Support/Orchard/project-context/<projectID>.local.json`
+
+公开文件里适合维护：
+
+- 服务器在哪
+- 应用服务部署在哪
+- 数据库文件或数据库实例在哪
+- 运行脚本、健康检查地址、配置文件落点
+
+本地密钥文件里适合维护：
+
+- SSH 用户名 / 端口 / 私钥路径
+- Control Plane access key
+- 其他只应该存在于当前宿主机的访问凭据
+
+查看项目上下文：
+
+```bash
+swift run OrchardAgent project-context show --workspace /Users/owen/MyCodeSpace/Orchard
+```
+
+按资源直接查局部信息：
+
+```bash
+swift run OrchardAgent project-context lookup service orchard-control-plane --workspace /Users/owen/MyCodeSpace/Orchard
+swift run OrchardAgent project-context lookup host aliyun-hangzhou-main --workspace /Users/owen/MyCodeSpace/Orchard
+swift run OrchardAgent project-context lookup database control-plane-sqlite --workspace /Users/owen/MyCodeSpace/Orchard
+swift run OrchardAgent project-context lookup credential orchard-control-plane-api --workspace /Users/owen/MyCodeSpace/Orchard
+```
+
+如果你要给脚本、MCP 或自动化任务消费，建议直接用 JSON：
+
+```bash
+swift run OrchardAgent project-context lookup host aliyun-hangzhou-main \
+  --workspace /Users/owen/MyCodeSpace/Orchard \
+  --format json
+```
+
+默认会把敏感字段打码；如果你确认当前终端安全，可以显式展开：
+
+```bash
+swift run OrchardAgent project-context show \
+  --workspace /Users/owen/MyCodeSpace/Orchard \
+  --reveal-secrets
+```
+
+检查当前宿主机是否已经配好密钥：
+
+```bash
+swift run OrchardAgent project-context doctor --workspace /Users/owen/MyCodeSpace/Orchard
+```
+
+生成一份本地密钥骨架文件：
+
+```bash
+swift run OrchardAgent project-context init-local --workspace /Users/owen/MyCodeSpace/Orchard
+```
+
+更完整的字段说明见：
+
+- `docs/PROJECT_CONTEXT.md`
+
+如果托管 Codex run 的工作目录里能定位到 `.orchard/project-context.json`，Agent 还会在首轮 prompt 自动注入一份非敏感上下文摘要，让任务优先按已登记的主机 / 服务 / 数据库事实执行，而不是自己猜。
 
 ## Agent 自检
 

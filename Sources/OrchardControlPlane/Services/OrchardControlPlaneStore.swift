@@ -3,6 +3,11 @@ import Foundation
 import OrchardCore
 import Vapor
 
+struct ManagedRunInteractiveTarget: Sendable {
+    let deviceID: String
+    let sessionID: String
+}
+
 final class OrchardControlPlaneStore: @unchecked Sendable {
     private let app: Application
     private let onlineThreshold: TimeInterval
@@ -36,7 +41,8 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
     func dashboardSnapshot() async throws -> DashboardSnapshot {
         async let devices = listDevices()
         async let tasks = listTasks()
-        return try await DashboardSnapshot(devices: devices, tasks: tasks)
+        async let managedRuns = listManagedRuns(limit: 200)
+        return try await DashboardSnapshot(devices: devices, tasks: tasks, managedRuns: managedRuns)
     }
 
     func listDevices() async throws -> [DeviceRecord] {
@@ -107,6 +113,220 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
         return TaskDetail(task: task.toRecord(), logs: Array(logs))
     }
 
+    func listManagedRuns(
+        deviceID: String? = nil,
+        limit: Int = 50,
+        statuses: [ManagedRunStatus] = []
+    ) async throws -> [ManagedRunSummary] {
+        let db = try database()
+        var query = ManagedRunModel.query(on: db)
+            .sort(\.$updatedAt, .descending)
+            .limit(min(max(limit, 1), 200))
+
+        if let deviceID, !deviceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            query = query.filter(\.$deviceID == deviceID)
+        }
+        if !statuses.isEmpty {
+            query = query.filter(\.$statusRaw ~~ statuses.map(\.rawValue))
+        }
+
+        let runs = try await query.all()
+        let deviceNames = try await loadDeviceNames(on: db)
+        let preferredDeviceIDs = try await loadPreferredDeviceIDs(taskIDs: runs.compactMap(\.taskID), on: db)
+        return runs.map { run in
+            run.toSummary(
+                deviceName: run.deviceID.flatMap { deviceNames[$0] },
+                preferredDeviceID: run.taskID.flatMap { preferredDeviceIDs[$0] }
+            )
+        }
+    }
+
+    func fetchManagedRunDetail(runID: String) async throws -> ManagedRunDetail {
+        let db = try database()
+        let run = try await requireManagedRunModel(runID: runID, on: db)
+        return try await makeManagedRunDetail(run: run, on: db)
+    }
+
+    func createManagedRun(_ request: CreateManagedRunRequest) async throws -> ManagedRunSummary {
+        guard !request.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw Abort(.badRequest, reason: "Run 标题不能为空。")
+        }
+        guard !request.workspaceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw Abort(.badRequest, reason: "工作区 ID 不能为空。")
+        }
+        guard !request.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw Abort(.badRequest, reason: "Prompt 不能为空。")
+        }
+        guard request.driver == .codexCLI else {
+            throw Abort(.badRequest, reason: "当前只支持 codexCLI driver。")
+        }
+
+        let db = try database()
+        let now = Date()
+        let runID = UUID().uuidString.lowercased()
+        let taskID = UUID().uuidString.lowercased()
+        let taskRequest = CreateTaskRequest(
+            title: request.title,
+            kind: .codex,
+            workspaceID: request.workspaceID,
+            relativePath: request.relativePath,
+            preferredDeviceID: request.preferredDeviceID,
+            payload: .codex(CodexTaskPayload(prompt: request.prompt))
+        )
+
+        try await db.transaction { transaction in
+            let task = try TaskModel(taskID: taskID, request: taskRequest, now: now)
+            try await task.create(on: transaction)
+
+            let run = ManagedRunModel(runID: runID, request: request, taskID: taskID, now: now)
+            try await run.create(on: transaction)
+            try await ManagedRunEventModel(
+                runID: runID,
+                kind: .runCreated,
+                createdAt: now,
+                title: "Run 已创建",
+                message: "已进入调度队列，等待 Agent 接手。"
+            ).create(on: transaction)
+        }
+
+        let run = try await requireManagedRunModel(runID: runID, on: db)
+        let deviceNames = try await loadDeviceNames(on: db)
+        return run.toSummary(
+            deviceName: run.deviceID.flatMap { deviceNames[$0] },
+            preferredDeviceID: request.preferredDeviceID
+        )
+    }
+
+    func continueManagedRun(runID: String, prompt: String) async throws -> ManagedRunDetail {
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw Abort(.badRequest, reason: "继续追问内容不能为空。")
+        }
+
+        let db = try database()
+        let run = try await requireManagedRunModel(runID: runID, on: db)
+        guard !run.status.isTerminal else {
+            throw Abort(.conflict, reason: "当前托管 run 已结束，不能继续。")
+        }
+        throw Abort(.conflict, reason: "请通过代理链路继续该 run。")
+    }
+
+    func interruptManagedRun(runID: String) async throws -> ManagedRunDetail {
+        let db = try database()
+        let run = try await requireManagedRunModel(runID: runID, on: db)
+        guard !run.status.isTerminal else {
+            throw Abort(.conflict, reason: "当前托管 run 已结束，不能中断。")
+        }
+        throw Abort(.conflict, reason: "请通过代理链路中断该 run。")
+    }
+
+    func interactiveTargetForManagedRun(runID: String) async throws -> ManagedRunInteractiveTarget {
+        let db = try database()
+        let run = try await requireManagedRunModel(runID: runID, on: db)
+
+        guard !run.status.isTerminal else {
+            throw Abort(.conflict, reason: "当前托管 run 已结束，不能再交互。")
+        }
+        guard let deviceID = run.deviceID, !deviceID.isEmpty else {
+            throw Abort(.conflict, reason: "当前托管 run 还没有分配设备。")
+        }
+        guard let sessionID = run.codexSessionID, !sessionID.isEmpty else {
+            throw Abort(.conflict, reason: "当前托管 run 还没有可交互的 Codex 会话。")
+        }
+
+        return ManagedRunInteractiveTarget(deviceID: deviceID, sessionID: sessionID)
+    }
+
+    func recordManagedRunContinuation(
+        runID: String,
+        prompt: String,
+        sessionDetail: CodexSessionDetail
+    ) async throws -> ManagedRunDetail {
+        let db = try database()
+        let run = try await requireManagedRunModel(runID: runID, on: db)
+        let now = Date()
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        run.codexSessionID = sessionDetail.session.id
+        run.lastUserPrompt = sessionDetail.session.lastUserMessage ?? trimmedPrompt
+        run.lastAssistantPreview = sessionDetail.session.lastAssistantMessage ?? run.lastAssistantPreview
+        run.summary = sessionDetail.session.lastAssistantMessage ?? run.summary
+        run.status = managedStatus(for: sessionDetail)
+        run.updatedAt = now
+        run.endedAt = run.status.isTerminal ? now : nil
+        try await run.update(on: db)
+
+        try await ManagedRunEventModel(
+            runID: runID,
+            kind: .continued,
+            createdAt: now,
+            title: "Run 已继续",
+            message: trimmedPrompt
+        ).create(on: db)
+
+        return try await makeManagedRunDetail(run: run, on: db)
+    }
+
+    func recordManagedRunInterruption(
+        runID: String,
+        sessionDetail: CodexSessionDetail
+    ) async throws -> ManagedRunDetail {
+        let db = try database()
+        let run = try await requireManagedRunModel(runID: runID, on: db)
+        let now = Date()
+
+        run.codexSessionID = sessionDetail.session.id
+        run.lastUserPrompt = sessionDetail.session.lastUserMessage ?? run.lastUserPrompt
+        run.lastAssistantPreview = sessionDetail.session.lastAssistantMessage ?? run.lastAssistantPreview
+        run.summary = sessionDetail.session.lastAssistantMessage ?? run.summary
+        run.status = managedStatus(for: sessionDetail)
+        run.updatedAt = now
+        if run.status.isTerminal {
+            run.endedAt = now
+        }
+        try await run.update(on: db)
+
+        try await ManagedRunEventModel(
+            runID: runID,
+            kind: .interruptRequested,
+            createdAt: now,
+            title: run.status == .interrupted ? "Run 已中断" : "Run 已请求中断",
+            message: run.summary
+        ).create(on: db)
+
+        return try await makeManagedRunDetail(run: run, on: db)
+    }
+
+    func stopManagedRun(runID: String, reason: String?) async throws -> ManagedRunSummary {
+        let db = try database()
+        let run = try await requireManagedRunModel(runID: runID, on: db)
+        guard let taskID = run.taskID else {
+            throw Abort(.conflict, reason: "当前 run 没有关联可停止的底层任务。")
+        }
+        _ = try await requestStop(taskID: taskID, reason: reason)
+        let refreshed = try await requireManagedRunModel(runID: runID, on: db)
+        let deviceNames = try await loadDeviceNames(on: db)
+        return refreshed.toSummary(
+            deviceName: refreshed.deviceID.flatMap { deviceNames[$0] },
+            preferredDeviceID: try await preferredDeviceID(for: refreshed, on: db)
+        )
+    }
+
+    func retryManagedRun(runID: String, prompt: String?) async throws -> ManagedRunSummary {
+        let db = try database()
+        let run = try await requireManagedRunModel(runID: runID, on: db)
+        let preferredDeviceID = try await preferredDeviceID(for: run, on: db)
+        let retryPrompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return try await createManagedRun(CreateManagedRunRequest(
+            title: run.title,
+            workspaceID: run.workspaceID,
+            relativePath: run.relativePath,
+            preferredDeviceID: preferredDeviceID,
+            driver: run.driver,
+            prompt: (retryPrompt?.isEmpty == false ? retryPrompt! : run.prompt)
+        ))
+    }
+
     func registerAgent(_ request: AgentRegistrationRequest) async throws -> DeviceRecord {
         try validateEnrollment(token: request.enrollmentToken)
         let db = try database()
@@ -162,6 +382,7 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
             device.metrics = metrics
         }
         try await device.update(on: db)
+        try await touchManagedRuns(deviceID: deviceID, seenAt: device.lastSeenAt, on: db)
         return try await requireDevice(deviceID: deviceID)
     }
 
@@ -195,6 +416,7 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
         task.startedAt = task.startedAt ?? now
         task.updatedAt = now
         try await task.update(on: db)
+        try await syncManagedRun(task: task, on: db)
         return task.toRecord()
     }
 
@@ -208,6 +430,7 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
         task.startedAt = nil
         task.updatedAt = Date()
         try await task.update(on: db)
+        try await syncManagedRun(task: task, on: db)
     }
 
     func requestStop(taskID: String, reason: String?) async throws -> TaskRecord {
@@ -236,6 +459,7 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
         }
 
         try await task.update(on: db)
+        try await syncManagedRun(task: task, on: db)
         return task.toRecord()
     }
 
@@ -262,6 +486,7 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
             )
             try await log.create(on: db)
         }
+        try await appendManagedRunLogsIfNeeded(taskID: payload.taskID, deviceID: deviceID, lines: payload.lines, on: db)
     }
 
     func applyTaskUpdate(deviceID: String, payload: AgentTaskUpdatePayload) async throws -> TaskRecord {
@@ -285,6 +510,7 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
             }
         }
         try await task.update(on: db)
+        try await syncManagedRun(task: task, on: db, payload: payload)
         return task.toRecord()
     }
 
@@ -311,5 +537,326 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
             .filter(\.$statusRaw ~~ [TaskStatus.running.rawValue, TaskStatus.stopRequested.rawValue])
             .count()
         return device.toRecord(workspaces: workspaces, runningTaskCount: runningTaskCount, onlineThreshold: onlineThreshold)
+    }
+
+    private func requireManagedRunModel(runID: String, on db: any Database) async throws -> ManagedRunModel {
+        guard let run = try await ManagedRunModel.find(runID, on: db) else {
+            throw Abort(.notFound, reason: "未找到托管 run。")
+        }
+        return run
+    }
+
+    private func loadDeviceNames(on db: any Database) async throws -> [String: String] {
+        try await DeviceModel.query(on: db)
+            .all()
+            .reduce(into: [:]) { result, device in
+                result[device.deviceID] = device.name
+            }
+    }
+
+    private func loadPreferredDeviceIDs(taskIDs: [String], on db: any Database) async throws -> [String: String] {
+        let uniqueTaskIDs = Array(Set(taskIDs.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }))
+        guard !uniqueTaskIDs.isEmpty else {
+            return [:]
+        }
+
+        return try await TaskModel.query(on: db)
+            .filter(\.$id ~~ uniqueTaskIDs)
+            .all()
+            .reduce(into: [:]) { result, task in
+                if let preferredDeviceID = task.preferredDeviceID {
+                    result[task.taskID] = preferredDeviceID
+                }
+            }
+    }
+
+    private func preferredDeviceID(for run: ManagedRunModel, on db: any Database) async throws -> String? {
+        guard let taskID = run.taskID, let task = try await TaskModel.find(taskID, on: db) else {
+            return nil
+        }
+        return task.preferredDeviceID
+    }
+
+    private func makeManagedRunDetail(run: ManagedRunModel, on db: any Database) async throws -> ManagedRunDetail {
+        let deviceNames = try await loadDeviceNames(on: db)
+        let preferredDeviceID = try await preferredDeviceID(for: run, on: db)
+        let events = try await ManagedRunEventModel.query(on: db)
+            .filter(\.$runID == run.runID)
+            .sort(\.$createdAt, .ascending)
+            .all()
+            .map { $0.toRecord() }
+        let logs = try await ManagedRunLogModel.query(on: db)
+            .filter(\.$runID == run.runID)
+            .all()
+            .sorted { lhs, rhs in
+                let lhsSequence = lhs.sequence ?? Int.max
+                let rhsSequence = rhs.sequence ?? Int.max
+                if lhsSequence != rhsSequence {
+                    return lhsSequence < rhsSequence
+                }
+                if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt < rhs.createdAt
+                }
+                return (lhs.id?.uuidString ?? "") < (rhs.id?.uuidString ?? "")
+            }
+            .map { $0.toRecord() }
+        return ManagedRunDetail(
+            run: run.toSummary(
+                deviceName: run.deviceID.flatMap { deviceNames[$0] },
+                preferredDeviceID: preferredDeviceID
+            ),
+            events: events,
+            logs: logs
+        )
+    }
+
+    private func touchManagedRuns(deviceID: String, seenAt: Date, on db: any Database) async throws {
+        let runs = try await ManagedRunModel.query(on: db)
+            .filter(\.$deviceID == deviceID)
+            .all()
+
+        for run in runs where !run.status.isTerminal {
+            run.lastHeartbeatAt = seenAt
+            if run.updatedAt < seenAt {
+                run.updatedAt = seenAt
+            }
+            try await run.update(on: db)
+        }
+    }
+
+    private func appendManagedRunLogsIfNeeded(
+        taskID: String,
+        deviceID: String,
+        lines: [String],
+        on db: any Database
+    ) async throws {
+        guard
+            let run = try await ManagedRunModel.query(on: db)
+                .filter(\.$taskID == taskID)
+                .first()
+        else {
+            return
+        }
+
+        let existingCount = try await ManagedRunLogModel.query(on: db)
+            .filter(\.$runID == run.runID)
+            .count()
+        let now = Date()
+
+        for (offset, line) in lines.enumerated() {
+            try await ManagedRunLogModel(
+                runID: run.runID,
+                deviceID: deviceID,
+                createdAt: now,
+                sequence: existingCount + offset,
+                line: String(line.prefix(4096))
+            ).create(on: db)
+        }
+
+        if !run.status.isTerminal {
+            run.updatedAt = now
+            try await run.update(on: db)
+        }
+    }
+
+    private func syncManagedRun(
+        task: TaskModel,
+        on db: any Database,
+        payload: AgentTaskUpdatePayload? = nil
+    ) async throws {
+        guard let run = try await ManagedRunModel.query(on: db)
+            .filter(\.$taskID == task.taskID)
+            .first()
+        else {
+            return
+        }
+
+        let previousStatus = run.status
+        let now = Date()
+
+        if task.status == .queued {
+            run.deviceID = nil
+            run.cwd = nil
+            run.startedAt = nil
+        } else {
+            run.deviceID = task.assignedDeviceID
+            run.startedAt = task.startedAt ?? run.startedAt
+            if run.cwd == nil, let deviceID = task.assignedDeviceID {
+                run.cwd = try await resolveManagedRunCWD(
+                    deviceID: deviceID,
+                    workspaceID: run.workspaceID,
+                    relativePath: run.relativePath,
+                    on: db
+                )
+            }
+        }
+
+        if let pid = payload?.pid {
+            run.pid = pid
+        }
+        if let sessionID = payload?.codexSessionID?.trimmingCharacters(in: .whitespacesAndNewlines), !sessionID.isEmpty {
+            run.codexSessionID = sessionID
+        }
+        if let lastUserPrompt = payload?.lastUserPrompt?.trimmedOrNil {
+            run.lastUserPrompt = lastUserPrompt
+        }
+        if let lastAssistantPreview = payload?.lastAssistantPreview?.trimmedOrNil {
+            run.lastAssistantPreview = lastAssistantPreview
+        }
+
+        if let managedRunStatus = payload?.managedRunStatus {
+            run.status = managedRunStatus
+        } else if task.status == .running, run.driver == .codexCLI {
+            if run.codexSessionID == nil {
+                run.status = .launching
+            } else if previousStatus == .waitingInput || previousStatus == .interrupting {
+                run.status = previousStatus
+            } else {
+                run.status = .running
+            }
+        } else {
+            run.status = managedStatus(for: task.status)
+        }
+        run.exitCode = task.exitCode
+        run.summary = task.summary
+        run.updatedAt = task.updatedAt
+        if run.lastUserPrompt == nil {
+            run.lastUserPrompt = run.prompt
+        }
+        if let finishedAt = task.finishedAt, task.status.isTerminal {
+            run.endedAt = finishedAt
+        } else if run.status.isTerminal {
+            run.endedAt = now
+        } else {
+            run.endedAt = nil
+        }
+
+        try await run.update(on: db)
+
+        guard previousStatus != run.status else {
+            return
+        }
+
+        let event = makeStatusEvent(for: run, previousStatus: previousStatus, at: now)
+        try await event.create(on: db)
+    }
+
+    private func managedStatus(for session: CodexSessionDetail) -> ManagedRunStatus {
+        switch session.session.state {
+        case .running:
+            if session.session.lastTurnStatus == "inProgress" {
+                return .running
+            }
+            return .running
+        case .idle:
+            return .waitingInput
+        case .completed:
+            return .succeeded
+        case .failed:
+            return .failed
+        case .interrupted:
+            return .interrupted
+        case .unknown:
+            return .running
+        }
+    }
+
+    private func resolveManagedRunCWD(
+        deviceID: String,
+        workspaceID: String,
+        relativePath: String?,
+        on db: any Database
+    ) async throws -> String? {
+        guard let workspace = try await DeviceWorkspaceModel.query(on: db)
+            .filter(\.$deviceID == deviceID)
+            .filter(\.$workspaceID == workspaceID)
+            .first()
+        else {
+            return nil
+        }
+
+        guard let relativePath, !relativePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return workspace.rootPath
+        }
+
+        do {
+            return try OrchardWorkspacePath.resolve(rootPath: workspace.rootPath, relativePath: relativePath).path
+        } catch {
+            return workspace.rootPath
+        }
+    }
+
+    private func managedStatus(for taskStatus: TaskStatus) -> ManagedRunStatus {
+        switch taskStatus {
+        case .queued:
+            return .queued
+        case .running:
+            return .running
+        case .succeeded:
+            return .succeeded
+        case .failed:
+            return .failed
+        case .stopRequested:
+            return .stopRequested
+        case .cancelled:
+            return .cancelled
+        }
+    }
+
+    private func makeStatusEvent(
+        for run: ManagedRunModel,
+        previousStatus: ManagedRunStatus,
+        at timestamp: Date
+    ) -> ManagedRunEventModel {
+        let title: String
+        let kind: ManagedRunEventKind
+
+        switch run.status {
+        case .running:
+            title = previousStatus == .queued ? "Run 已开始" : "Run 恢复运行"
+            kind = .started
+        case .stopRequested:
+            title = "Run 已请求停止"
+            kind = .stopRequested
+        case .succeeded:
+            title = "Run 已完成"
+            kind = .finished
+        case .failed:
+            title = "Run 执行失败"
+            kind = .finished
+        case .cancelled:
+            title = "Run 已取消"
+            kind = .finished
+        case .interrupted:
+            title = "Run 已中断"
+            kind = .finished
+        case .waitingInput:
+            title = "Run 等待输入"
+            kind = .waitingInput
+        case .interrupting:
+            title = "Run 正在中断"
+            kind = .interruptRequested
+        case .launching:
+            title = "Run 正在启动"
+            kind = .launching
+        case .queued:
+            title = "Run 已重新排队"
+            kind = .runCreated
+        }
+
+        return ManagedRunEventModel(
+            runID: run.runID,
+            kind: kind,
+            createdAt: timestamp,
+            title: title,
+            message: run.summary
+        )
+    }
+}
+
+private extension String {
+    var trimmedOrNil: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

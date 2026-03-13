@@ -3,3 +3,5 @@
 Packages/
 DerivedData/
 .DS_Store
+control-plane.env
+deploy/control-plane.env

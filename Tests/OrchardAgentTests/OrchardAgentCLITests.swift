@@ -27,6 +27,58 @@ final class OrchardAgentCLITests: XCTestCase {
         XCTAssertTrue(options.overwrite)
     }
 
+    func testCLIParsesInitConfigStatusPageOptions() throws {
+        let command = try AgentCLI.parse(arguments: [
+            "OrchardAgent",
+            "init-config",
+            "--access-key", "browser-secret",
+            "--status-page-host", "0.0.0.0",
+            "--status-page-port", "5423",
+            "--disable-status-page",
+        ])
+
+        guard case let .initConfig(options) = command else {
+            return XCTFail("Expected init-config command")
+        }
+
+        XCTAssertEqual(options.controlPlaneAccessKey, "browser-secret")
+        XCTAssertEqual(options.localStatusPageHost, "0.0.0.0")
+        XCTAssertEqual(options.localStatusPagePort, 5423)
+        XCTAssertFalse(options.localStatusPageEnabled)
+    }
+
+    func testCLIParsesStatusOptions() throws {
+        let command = try AgentCLI.parse(arguments: [
+            "OrchardAgent",
+            "status",
+            "--config-path", "/tmp/agent.json",
+            "--state-path", "/tmp/agent-state.json",
+            "--tasks-dir", "/tmp/tasks",
+            "--access-key", "browser-secret",
+            "--format", "json",
+            "--limit", "12",
+            "--skip-remote",
+            "--serve",
+            "--host", "127.0.0.1",
+            "--port", "5420",
+        ])
+
+        guard case let .status(options) = command else {
+            return XCTFail("Expected status command")
+        }
+
+        XCTAssertEqual(options.configURL.path, "/tmp/agent.json")
+        XCTAssertEqual(options.stateURL.path, "/tmp/agent-state.json")
+        XCTAssertEqual(options.tasksDirectoryURL.path, "/tmp/tasks")
+        XCTAssertEqual(options.accessKey, "browser-secret")
+        XCTAssertEqual(options.outputFormat, .json)
+        XCTAssertEqual(options.limit, 12)
+        XCTAssertFalse(options.includeRemote)
+        XCTAssertTrue(options.serve)
+        XCTAssertEqual(options.bindHost, "127.0.0.1")
+        XCTAssertEqual(options.port, 5420)
+    }
+
     func testInitConfigWritesValidatedConfig() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -41,6 +93,37 @@ final class OrchardAgentCLITests: XCTestCase {
         XCTAssertEqual(result.configURL.path, configURL.path)
         XCTAssertEqual(result.resolvedConfig.deviceID, "mac-mini")
         XCTAssertEqual(result.resolvedConfig.workspaceRoots.first?.rootPath, workspace.path)
+        XCTAssertNil(result.resolvedConfig.controlPlaneAccessKey)
+        XCTAssertTrue(result.resolvedConfig.localStatusPageEnabled)
+        XCTAssertEqual(result.resolvedConfig.localStatusPageHost, "127.0.0.1")
+        XCTAssertEqual(result.resolvedConfig.localStatusPagePort, 5419)
+    }
+
+    func testInitConfigWritesAccessKeyAndStatusPageOverrides() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let workspace = directory.appendingPathComponent("workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+
+        let configURL = directory.appendingPathComponent("agent.json", isDirectory: false)
+        var options = try AgentInitConfigOptions(configURL: configURL, currentDirectoryPath: workspace.path, hostName: "Mac Mini")
+        options.controlPlaneAccessKey = "  browser-secret  "
+        options.localStatusPageEnabled = false
+        options.localStatusPageHost = " 0.0.0.0 "
+        options.localStatusPagePort = 5423
+
+        let result = try AgentConfigInitializer.writeConfig(options: options)
+        let loaded = try AgentConfigLoader.load(from: configURL, hostName: "Mac Mini")
+
+        XCTAssertEqual(result.resolvedConfig.controlPlaneAccessKey, "browser-secret")
+        XCTAssertFalse(result.resolvedConfig.localStatusPageEnabled)
+        XCTAssertEqual(result.resolvedConfig.localStatusPageHost, "0.0.0.0")
+        XCTAssertEqual(result.resolvedConfig.localStatusPagePort, 5423)
+        XCTAssertEqual(loaded.controlPlaneAccessKey, "browser-secret")
+        XCTAssertFalse(loaded.localStatusPageEnabled)
+        XCTAssertEqual(loaded.localStatusPageHost, "0.0.0.0")
+        XCTAssertEqual(loaded.localStatusPagePort, 5423)
     }
 
     func testLaunchAgentRendererSubstitutesPaths() {

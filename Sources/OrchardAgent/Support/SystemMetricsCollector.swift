@@ -5,12 +5,13 @@ import OrchardCore
 final class SystemMetricsCollector: @unchecked Sendable {
     private var previousCPUTicks: [UInt32]?
 
-    func snapshot(runningTasks: Int) -> DeviceMetrics {
+    func snapshot(runningTasks: Int, codexDesktop: CodexDesktopMetrics? = nil) -> DeviceMetrics {
         DeviceMetrics(
             cpuPercentApprox: currentCPUPercent(),
             memoryPercent: currentMemoryPercent(),
             loadAverage: currentLoadAverage(),
-            runningTasks: runningTasks
+            runningTasks: runningTasks,
+            codexDesktop: codexDesktop
         )
     }
 

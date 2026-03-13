@@ -46,7 +46,7 @@ actor TaskScheduler {
             }
 
             let assigned = try await store.assignTask(taskID: task.id, to: chosen.deviceID)
-            if registry.send(.taskAssigned(assigned), to: chosen.deviceID) {
+            if await registry.send(.taskAssigned(assigned), to: chosen.deviceID) {
                 if let index = devices.firstIndex(where: { $0.deviceID == chosen.deviceID }) {
                     devices[index].runningTaskCount += 1
                 }

@@ -1,0 +1,6 @@
+.build/
+.swiftpm/
+.git/
+DerivedData/
+data/
+control-plane.env

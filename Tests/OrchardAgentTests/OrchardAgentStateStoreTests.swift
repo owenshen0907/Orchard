@@ -4,7 +4,7 @@ import XCTest
 import OrchardCore
 
 final class OrchardAgentStateStoreTests: XCTestCase {
-    func testBootstrapConvertsActiveTasksIntoPendingFailures() async throws {
+    func testBootstrapPreservesActiveTasksForRuntimeRecovery() async throws {
         let stateURL = try makeStateURL()
         defer { try? FileManager.default.removeItem(at: stateURL.deletingLastPathComponent()) }
 
@@ -12,11 +12,10 @@ final class OrchardAgentStateStoreTests: XCTestCase {
         try await store.markTaskStarted("task-a")
         try await store.markTaskStarted("task-b")
 
-        let pending = try await store.bootstrap()
+        let bootstrap = try await store.bootstrap()
 
-        XCTAssertEqual(pending.map(\.taskID), ["task-a", "task-b"])
-        XCTAssertTrue(pending.allSatisfy { $0.status == .failed })
-        XCTAssertTrue(pending.allSatisfy { $0.summary == "agent restarted" })
+        XCTAssertEqual(bootstrap.activeTaskIDs, ["task-a", "task-b"])
+        XCTAssertTrue(bootstrap.pendingTaskUpdates.isEmpty)
     }
 
     func testStagedTaskUpdatePersistsUntilDelivered() async throws {
@@ -33,13 +32,14 @@ final class OrchardAgentStateStoreTests: XCTestCase {
         ))
 
         let pendingBeforeDelivery = try await store.bootstrap()
-        XCTAssertEqual(pendingBeforeDelivery.count, 1)
-        XCTAssertEqual(pendingBeforeDelivery.first?.taskID, "task-a")
-        XCTAssertEqual(pendingBeforeDelivery.first?.status, .succeeded)
+        XCTAssertEqual(pendingBeforeDelivery.pendingTaskUpdates.count, 1)
+        XCTAssertEqual(pendingBeforeDelivery.pendingTaskUpdates.first?.taskID, "task-a")
+        XCTAssertEqual(pendingBeforeDelivery.pendingTaskUpdates.first?.status, .succeeded)
 
         try await store.markTaskUpdateDelivered("task-a")
         let pendingAfterDelivery = try await store.bootstrap()
-        XCTAssertTrue(pendingAfterDelivery.isEmpty)
+        XCTAssertTrue(pendingAfterDelivery.pendingTaskUpdates.isEmpty)
+        XCTAssertTrue(pendingAfterDelivery.activeTaskIDs.isEmpty)
     }
 }
 

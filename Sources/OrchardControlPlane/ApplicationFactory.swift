@@ -21,6 +21,7 @@ public func makeOrchardControlPlaneApplication(environment: Environment) async t
     app.databases.use(.sqlite(.file(databaseURL.path)), as: .sqlite)
     app.migrations.add(CreateDeviceTablesMigration())
     app.migrations.add(AddTaskLogSequenceMigration())
+    app.migrations.add(CreateManagedRunTablesMigration())
     try await app.autoMigrate()
     guard let sqlDatabase = app.db as? any SQLDatabase else {
         throw NSError(domain: "OrchardControlPlane", code: 1, userInfo: [
@@ -33,9 +34,23 @@ public func makeOrchardControlPlaneApplication(environment: Environment) async t
     let accessControl = OrchardAccessControl(accessKey: Environment.get("ORCHARD_ACCESS_KEY"))
     let store = OrchardControlPlaneStore(app: app, enrollmentToken: enrollmentToken)
     let registry = AgentConnectionRegistry()
+    let codexBroker = AgentCodexCommandBroker()
+    let codexProxy = CodexSessionProxyService(store: store, registry: registry, broker: codexBroker)
+    let projectContextBroker = AgentProjectContextCommandBroker()
+    let projectContextProxy = ProjectContextProxyService(store: store, registry: registry, broker: projectContextBroker)
     let scheduler = TaskScheduler(store: store, registry: registry)
 
-    configureRoutes(app: app, store: store, registry: registry, scheduler: scheduler, accessControl: accessControl)
+    configureRoutes(
+        app: app,
+        store: store,
+        registry: registry,
+        scheduler: scheduler,
+        accessControl: accessControl,
+        codexBroker: codexBroker,
+        codexProxy: codexProxy,
+        projectContextBroker: projectContextBroker,
+        projectContextProxy: projectContextProxy
+    )
     return app
 }
 
@@ -44,7 +59,11 @@ private func configureRoutes(
     store: OrchardControlPlaneStore,
     registry: AgentConnectionRegistry,
     scheduler: TaskScheduler,
-    accessControl: OrchardAccessControl
+    accessControl: OrchardAccessControl,
+    codexBroker: AgentCodexCommandBroker,
+    codexProxy: CodexSessionProxyService,
+    projectContextBroker: AgentProjectContextCommandBroker,
+    projectContextProxy: ProjectContextProxyService
 ) {
     app.get { req async throws -> Response in
         guard !accessControl.isEnabled || accessControl.isAuthorized(req) else {
@@ -52,11 +71,17 @@ private func configureRoutes(
         }
         do {
             let snapshot = try await store.dashboardSnapshot()
-            return OrchardLandingPage.response(snapshot: snapshot, showLogout: accessControl.isEnabled)
+            let codexSessions = (try? await codexProxy.listSessions(limit: 20)) ?? []
+            return OrchardLandingPage.response(
+                snapshot: snapshot,
+                codexSessions: codexSessions,
+                showLogout: accessControl.isEnabled
+            )
         } catch {
             req.logger.error("控制台快照加载失败：\(String(describing: error))")
             return OrchardLandingPage.response(
-                snapshot: DashboardSnapshot(devices: [], tasks: []),
+                snapshot: DashboardSnapshot(devices: [], tasks: [], managedRuns: []),
+                codexSessions: [],
                 showLogout: accessControl.isEnabled,
                 errorMessage: "暂时无法加载实时数据，但服务仍可用。"
             )
@@ -111,6 +136,81 @@ private func configureRoutes(
         return try await store.fetchTaskDetail(taskID: taskID)
     }
 
+    protected.get("api", "runs") { req async throws in
+        let deviceID = req.query[String.self, at: "deviceID"]
+        let limit = req.query[Int.self, at: "limit"] ?? 50
+        let statuses = try parseManagedRunStatuses(req)
+        return try await store.listManagedRuns(deviceID: deviceID, limit: limit, statuses: statuses)
+    }
+
+    protected.get("api", "runs", ":runID") { req async throws in
+        guard let runID = req.parameters.get("runID") else {
+            throw Abort(.badRequest, reason: "缺少 run ID。")
+        }
+        return try await store.fetchManagedRunDetail(runID: runID)
+    }
+
+    protected.get("api", "codex", "sessions") { req async throws in
+        let deviceID = req.query[String.self, at: "deviceID"]
+        let limit = req.query[Int.self, at: "limit"] ?? 20
+        return try await codexProxy.listSessions(deviceID: deviceID, limit: limit)
+    }
+
+    protected.get("api", "devices", ":deviceID", "codex", "sessions", ":sessionID") { req async throws in
+        guard let deviceID = req.parameters.get("deviceID"), let sessionID = req.parameters.get("sessionID") else {
+            throw Abort(.badRequest, reason: "缺少设备 ID 或会话 ID。")
+        }
+        return try await codexProxy.fetchSessionDetail(deviceID: deviceID, sessionID: sessionID)
+    }
+
+    protected.post("api", "devices", ":deviceID", "codex", "sessions", ":sessionID", "continue") { req async throws in
+        guard let deviceID = req.parameters.get("deviceID"), let sessionID = req.parameters.get("sessionID") else {
+            throw Abort(.badRequest, reason: "缺少设备 ID 或会话 ID。")
+        }
+        let request = try req.content.decode(CodexSessionContinueRequest.self)
+        return try await codexProxy.continueSession(deviceID: deviceID, sessionID: sessionID, prompt: request.prompt)
+    }
+
+    protected.post("api", "devices", ":deviceID", "codex", "sessions", ":sessionID", "interrupt") { req async throws in
+        guard let deviceID = req.parameters.get("deviceID"), let sessionID = req.parameters.get("sessionID") else {
+            throw Abort(.badRequest, reason: "缺少设备 ID 或会话 ID。")
+        }
+        _ = try req.content.decode(CodexSessionInterruptRequest.self)
+        return try await codexProxy.interruptSession(deviceID: deviceID, sessionID: sessionID)
+    }
+
+    protected.get("api", "devices", ":deviceID", "workspaces", ":workspaceID", "project-context") { req async throws in
+        guard
+            let deviceID = req.parameters.get("deviceID"),
+            let workspaceID = req.parameters.get("workspaceID")
+        else {
+            throw Abort(.badRequest, reason: "缺少设备 ID 或工作区 ID。")
+        }
+        return try await projectContextProxy.fetchSummary(deviceID: deviceID, workspaceID: workspaceID)
+    }
+
+    protected.get("api", "devices", ":deviceID", "workspaces", ":workspaceID", "project-context", "lookup") { req async throws in
+        guard
+            let deviceID = req.parameters.get("deviceID"),
+            let workspaceID = req.parameters.get("workspaceID")
+        else {
+            throw Abort(.badRequest, reason: "缺少设备 ID 或工作区 ID。")
+        }
+
+        guard let rawSubject = req.query[String.self, at: "subject"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let subject = ProjectContextRemoteSubject(rawValue: rawSubject.lowercased()) else {
+            throw Abort(.badRequest, reason: "缺少或无效的项目上下文查询 subject。")
+        }
+
+        let selector = req.query[String.self, at: "selector"]
+        return try await projectContextProxy.lookup(
+            deviceID: deviceID,
+            workspaceID: workspaceID,
+            subject: subject,
+            selector: selector
+        )
+    }
+
     app.post("api", "agents", "register") { req async throws in
         let registration = try req.content.decode(AgentRegistrationRequest.self)
         let device = try await store.registerAgent(registration)
@@ -125,6 +225,13 @@ private func configureRoutes(
         return task
     }
 
+    protected.post("api", "runs") { req async throws in
+        let create = try req.content.decode(CreateManagedRunRequest.self)
+        let run = try await store.createManagedRun(create)
+        await scheduler.trigger()
+        return run
+    }
+
     protected.post("api", "tasks", ":taskID", "stop") { req async throws in
         guard let taskID = req.parameters.get("taskID") else {
             throw Abort(.badRequest, reason: "缺少任务 ID。")
@@ -132,13 +239,67 @@ private func configureRoutes(
         let request = try req.content.decode(StopTaskRequest.self)
         let task = try await store.requestStop(taskID: taskID, reason: request.reason)
         if task.status == .stopRequested, let deviceID = task.assignedDeviceID {
-            _ = registry.send(.taskStop(TaskStopCommand(taskID: taskID, reason: request.reason)), to: deviceID)
+            _ = await registry.send(.taskStop(TaskStopCommand(taskID: taskID, reason: request.reason)), to: deviceID)
         }
         await scheduler.trigger()
         return task
     }
 
-    app.webSocket("api", "agents", ":deviceID", "session") { req, ws async in
+    protected.post("api", "runs", ":runID", "continue") { req async throws in
+        guard let runID = req.parameters.get("runID") else {
+            throw Abort(.badRequest, reason: "缺少 run ID。")
+        }
+        let request = try req.content.decode(ManagedRunContinueRequest.self)
+        let target = try await store.interactiveTargetForManagedRun(runID: runID)
+        let detail = try await codexProxy.continueSession(
+            deviceID: target.deviceID,
+            sessionID: target.sessionID,
+            prompt: request.prompt
+        )
+        return try await store.recordManagedRunContinuation(
+            runID: runID,
+            prompt: request.prompt,
+            sessionDetail: detail
+        )
+    }
+
+    protected.post("api", "runs", ":runID", "interrupt") { req async throws in
+        guard let runID = req.parameters.get("runID") else {
+            throw Abort(.badRequest, reason: "缺少 run ID。")
+        }
+        _ = try req.content.decode(ManagedRunInterruptRequest.self)
+        let target = try await store.interactiveTargetForManagedRun(runID: runID)
+        let detail = try await codexProxy.interruptSession(
+            deviceID: target.deviceID,
+            sessionID: target.sessionID
+        )
+        return try await store.recordManagedRunInterruption(runID: runID, sessionDetail: detail)
+    }
+
+    protected.post("api", "runs", ":runID", "stop") { req async throws in
+        guard let runID = req.parameters.get("runID") else {
+            throw Abort(.badRequest, reason: "缺少 run ID。")
+        }
+        let request = try req.content.decode(ManagedRunStopRequest.self)
+        let run = try await store.stopManagedRun(runID: runID, reason: request.reason)
+        if run.status == .stopRequested, let taskID = run.taskID, let deviceID = run.deviceID {
+            _ = await registry.send(.taskStop(TaskStopCommand(taskID: taskID, reason: request.reason)), to: deviceID)
+        }
+        await scheduler.trigger()
+        return run
+    }
+
+    protected.post("api", "runs", ":runID", "retry") { req async throws in
+        guard let runID = req.parameters.get("runID") else {
+            throw Abort(.badRequest, reason: "缺少 run ID。")
+        }
+        let request = try req.content.decode(ManagedRunRetryRequest.self)
+        let run = try await store.retryManagedRun(runID: runID, prompt: request.prompt)
+        await scheduler.trigger()
+        return run
+    }
+
+    app.webSocket("api", "agents", ":deviceID", "session", maxFrameSize: 1_048_576) { req, ws async in
         guard let deviceID = req.parameters.get("deviceID") else {
             closeSocket(ws)
             return
@@ -153,11 +314,12 @@ private func configureRoutes(
         }
 
         registry.connect(deviceID: deviceID, socket: ws)
+        ws.pingInterval = .seconds(15)
         _ = try? await store.markDeviceSeen(deviceID: deviceID, metrics: nil)
         await scheduler.trigger()
 
         for command in (try? await store.pendingStopCommands(deviceID: deviceID)) ?? [] {
-            _ = registry.send(.taskStop(command), to: deviceID)
+            _ = await registry.send(.taskStop(command), to: deviceID)
         }
 
         ws.eventLoop.execute {
@@ -165,7 +327,14 @@ private func configureRoutes(
                 Task {
                     do {
                         let message = try OrchardJSON.decoder.decode(AgentSocketMessage.self, from: Data(text.utf8))
-                        try await handleAgentMessage(message, deviceID: deviceID, store: store, registry: registry)
+                        try await handleAgentMessage(
+                            message,
+                            deviceID: deviceID,
+                            store: store,
+                            registry: registry,
+                            codexBroker: codexBroker,
+                            projectContextBroker: projectContextBroker
+                        )
                         await scheduler.trigger()
                     } catch {
                         print("[OrchardControlPlane] websocket message error: \(error)")
@@ -191,30 +360,58 @@ private func closeSocket(_ socket: WebSocket, code: WebSocketErrorCode = .goingA
     }
 }
 
+private func parseManagedRunStatuses(_ req: Request) throws -> [ManagedRunStatus] {
+    guard let raw = req.query[String.self, at: "status"], !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return []
+    }
+
+    var statuses: [ManagedRunStatus] = []
+    for part in raw.split(separator: ",") {
+        let value = String(part).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let status = ManagedRunStatus(rawValue: value) else {
+            throw Abort(.badRequest, reason: "无效的 run 状态筛选：\(value)。")
+        }
+        if !statuses.contains(status) {
+            statuses.append(status)
+        }
+    }
+    return statuses
+}
+
 private func handleAgentMessage(
     _ message: AgentSocketMessage,
     deviceID: String,
     store: OrchardControlPlaneStore,
-    registry: AgentConnectionRegistry
+    registry: AgentConnectionRegistry,
+    codexBroker: AgentCodexCommandBroker,
+    projectContextBroker: AgentProjectContextCommandBroker
 ) async throws {
     switch message {
     case let .hello(payload):
-        _ = try await store.markDeviceSeen(deviceID: deviceID, metrics: DeviceMetrics(runningTasks: payload.runningTaskIDs.count))
+        var metrics = payload.metrics ?? DeviceMetrics()
+        metrics.runningTasks = payload.runningTaskIDs.count
+        _ = try await store.markDeviceSeen(deviceID: deviceID, metrics: metrics)
         for command in try await store.pendingStopCommands(deviceID: deviceID) {
-            _ = registry.send(.taskStop(command), to: deviceID)
+            _ = await registry.send(.taskStop(command), to: deviceID)
         }
     case let .heartbeat(payload):
         var metrics = payload.metrics
         metrics.runningTasks = payload.runningTaskIDs.count
         _ = try await store.markDeviceSeen(deviceID: deviceID, metrics: metrics)
         for command in try await store.pendingStopCommands(deviceID: deviceID) {
-            _ = registry.send(.taskStop(command), to: deviceID)
+            _ = await registry.send(.taskStop(command), to: deviceID)
         }
     case let .logBatch(payload):
         try await store.appendLogs(deviceID: deviceID, payload: payload)
         _ = try await store.markDeviceSeen(deviceID: deviceID, metrics: nil)
     case let .taskUpdate(payload):
         _ = try await store.applyTaskUpdate(deviceID: deviceID, payload: payload)
+        _ = try await store.markDeviceSeen(deviceID: deviceID, metrics: nil)
+    case let .codexCommandResult(payload):
+        await codexBroker.record(payload)
+        _ = try await store.markDeviceSeen(deviceID: deviceID, metrics: nil)
+    case let .projectContextCommandResult(payload):
+        await projectContextBroker.record(payload)
         _ = try await store.markDeviceSeen(deviceID: deviceID, metrics: nil)
     }
 }

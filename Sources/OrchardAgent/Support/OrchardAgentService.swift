@@ -2,33 +2,73 @@ import Darwin
 import Foundation
 import OrchardCore
 
+private enum RunningTaskHandle {
+    case process(TaskProcessController)
+    case codex(ManagedCodexTaskController)
+
+    func requestStop() async {
+        switch self {
+        case let .process(controller):
+            controller.requestStop()
+        case let .codex(controller):
+            await controller.requestStop()
+        }
+    }
+}
+
 actor OrchardAgentService {
     private let config: ResolvedAgentConfig
+    private let configURL: URL?
+    private let stateURL: URL?
     private let client: OrchardAPIClient
     private let stateStore: AgentStateStore
     private let session: URLSession
     private let tasksDirectory: URL
     private let metricsCollector: SystemMetricsCollector
+    private let codexDesktopMetricsCollector: CodexDesktopMetricsCollector
+    private let codexBridge: CodexAppServerBridge
+    private let projectContextBridge: ProjectContextCommandBridge
     private var webSocketTask: URLSessionWebSocketTask?
-    private var runningTasks: [String: TaskProcessController] = [:]
+    private var runningTasks: [String: RunningTaskHandle] = [:]
     private var pendingLogs: [String: [String]] = [:]
+    private var pendingManagedCodexProgress: [String: ManagedCodexTaskSnapshot] = [:]
     private var logFlushTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
+    private var statusPageTask: Task<Void, Never>?
     private var pendingTaskUpdates: [String: AgentTaskUpdatePayload]
     private var shouldRun = true
 
-    init(config: ResolvedAgentConfig, stateStore: AgentStateStore, tasksDirectory: URL) {
+    init(
+        config: ResolvedAgentConfig,
+        stateStore: AgentStateStore,
+        tasksDirectory: URL,
+        configURL: URL? = nil,
+        stateURL: URL? = nil,
+        metricsCollector: SystemMetricsCollector = SystemMetricsCollector(),
+        codexDesktopMetricsCollector: CodexDesktopMetricsCollector = CodexDesktopMetricsCollector()
+    ) {
         self.config = config
+        self.configURL = configURL
+        self.stateURL = stateURL
         self.client = OrchardAPIClient(baseURL: config.serverURL)
         self.stateStore = stateStore
         self.session = URLSession(configuration: .default)
         self.tasksDirectory = tasksDirectory
-        self.metricsCollector = SystemMetricsCollector()
+        self.metricsCollector = metricsCollector
+        self.codexDesktopMetricsCollector = codexDesktopMetricsCollector
+        self.codexBridge = CodexAppServerBridge(config: config)
+        self.projectContextBridge = ProjectContextCommandBridge(config: config)
         self.pendingTaskUpdates = [:]
     }
 
     func run() async throws {
-        pendingTaskUpdates = Dictionary(uniqueKeysWithValues: try await stateStore.bootstrap().map { ($0.taskID, $0) })
+        try FileManager.default.createDirectory(at: tasksDirectory, withIntermediateDirectories: true, attributes: nil)
+        startLocalStatusPageIfNeeded()
+        defer { stopLocalStatusPage() }
+
+        let bootstrap = try await stateStore.bootstrap()
+        pendingTaskUpdates = Dictionary(uniqueKeysWithValues: bootstrap.pendingTaskUpdates.map { ($0.taskID, $0) })
+        try await restoreActiveTasks(taskIDs: bootstrap.activeTaskIDs)
         var backoff: UInt64 = 1
 
         while shouldRun && !Task.isCancelled {
@@ -49,13 +89,11 @@ actor OrchardAgentService {
 
     func stop() {
         shouldRun = false
-        for controller in runningTasks.values {
-            controller.requestStop()
-        }
         logFlushTask?.cancel()
         logFlushTask = nil
         heartbeatTask?.cancel()
         heartbeatTask = nil
+        stopLocalStatusPage()
         webSocketTask?.cancel(with: .goingAway, reason: nil)
     }
 
@@ -80,9 +118,15 @@ actor OrchardAgentService {
         webSocketTask = socket
         socket.resume()
 
-        try await sendMessage(.hello(AgentHelloPayload(runningTaskIDs: runningTaskIDs())))
+        try await sendMessage(.hello(AgentHelloPayload(
+            metrics: currentDeviceMetrics(),
+            runningTaskIDs: runningTaskIDs()
+        )))
         try await flushPendingTaskUpdates()
         await flushPendingLogs()
+        await sendHeartbeat()
+        await flushPendingManagedCodexProgress()
+        await replayRunningTaskState()
 
         heartbeatTask = Task { [heartbeatInterval = config.heartbeatIntervalSeconds] in
             while !Task.isCancelled {
@@ -118,7 +162,15 @@ actor OrchardAgentService {
         case let .taskAssigned(task):
             try await startTask(task)
         case let .taskStop(command):
-            runningTasks[command.taskID]?.requestStop()
+            if let controller = runningTasks[command.taskID] {
+                await controller.requestStop()
+            }
+        case let .codexCommand(command):
+            let response = await codexBridge.handle(command)
+            try await sendMessage(.codexCommandResult(response))
+        case let .projectContextCommand(command):
+            let response = await projectContextBridge.handle(command)
+            try await sendMessage(.projectContextCommandResult(response))
         }
     }
 
@@ -142,42 +194,120 @@ actor OrchardAgentService {
             return
         }
 
-        let runner = TaskRunnerFactory.runner(for: task.kind)
-        let launchSpec = try runner.makeLaunchSpec(task: task, cwd: cwd, config: config)
-        let controller = try TaskProcessController(
-            task: task,
-            runtimeDirectory: tasksDirectory.appendingPathComponent(task.id, isDirectory: true),
-            launchSpec: launchSpec,
-            lineHandler: { line in
-                Task { await self.enqueueLog(taskID: task.id, line: line) }
-            },
-            completion: { result in
-                Task { await self.completeTask(taskID: task.id, result: result) }
-            }
-        )
-
-        runningTasks[task.id] = controller
-        try await stateStore.markTaskStarted(task.id)
-        do {
-            try controller.start()
-        } catch {
-            runningTasks.removeValue(forKey: task.id)
-            try await sendTerminalUpdate(AgentTaskUpdatePayload(taskID: task.id, status: .failed, summary: String(describing: error)))
+        switch task.kind {
+        case .shell:
+            try await startProcessBackedTask(task, cwd: cwd)
+        case .codex:
+            try await startManagedCodexTask(task, cwd: cwd)
         }
     }
 
-    private func completeTask(taskID: String, result: TaskExecutionResult) async {
+    private func completeTask(
+        taskID: String,
+        result: TaskExecutionResult,
+        managedSnapshot: ManagedCodexTaskSnapshot? = nil
+    ) async {
         runningTasks.removeValue(forKey: taskID)
+        pendingManagedCodexProgress.removeValue(forKey: taskID)
         do {
             await flushLogs(for: taskID)
             try await sendTerminalUpdate(AgentTaskUpdatePayload(
                 taskID: taskID,
                 status: result.status,
                 exitCode: result.exitCode,
-                summary: result.summary
+                summary: result.summary,
+                managedRunStatus: managedSnapshot?.managedRunStatus,
+                pid: managedSnapshot?.pid,
+                codexSessionID: managedSnapshot?.codexSessionID,
+                lastUserPrompt: managedSnapshot?.lastUserPrompt,
+                lastAssistantPreview: managedSnapshot?.lastAssistantPreview
             ))
         } catch {
-            print("[OrchardAgent] failed to send completion for \(taskID): \(error)")
+            handleSocketSendFailure(error, context: "failed to send completion for \(taskID)")
+        }
+    }
+
+    private func restoreActiveTasks(taskIDs: [String]) async throws {
+        for taskID in taskIDs.sorted() {
+            let runtimeDirectory = tasksDirectory.appendingPathComponent(taskID, isDirectory: true)
+
+            do {
+                let task = try TaskProcessController.loadPersistedTask(runtimeDirectory: runtimeDirectory)
+                guard let workspace = config.workspaceRoots.first(where: { $0.id == task.workspaceID }) else {
+                    try await stageRestoreFailure(taskID: taskID, summary: "agent restarted: workspace missing")
+                    continue
+                }
+
+                let cwd = try OrchardWorkspacePath.resolve(rootPath: workspace.rootPath, relativePath: task.relativePath)
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: cwd.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                    try await stageRestoreFailure(taskID: taskID, summary: "agent restarted: working directory missing")
+                    continue
+                }
+
+                switch task.kind {
+                case .shell:
+                    let runner = TaskRunnerFactory.runner(for: task.kind)
+                    let launchSpec = try runner.makeLaunchSpec(task: task, cwd: cwd, config: config)
+                    let recovery = try TaskProcessController.recover(
+                        task: task,
+                        runtimeDirectory: runtimeDirectory,
+                        launchSpec: launchSpec,
+                        lineHandler: { line in
+                            Task { await self.enqueueLog(taskID: task.id, line: line) }
+                        },
+                        completion: { result in
+                            Task { await self.completeTask(taskID: task.id, result: result) }
+                        }
+                    )
+
+                    switch recovery {
+                    case let .attached(controller):
+                        runningTasks[task.id] = .process(controller)
+                    case let .finished(result):
+                        await completeTask(taskID: task.id, result: result)
+                    case .unavailable:
+                        try await stageRestoreFailure(taskID: taskID, summary: "agent restarted")
+                    }
+                case .codex:
+                    let recovery = try await ManagedCodexTaskController.recover(
+                        task: task,
+                        runtimeDirectory: runtimeDirectory,
+                        cwd: cwd,
+                        codexBinaryPath: config.codexBinaryPath,
+                        lineHandler: { line in
+                            Task { await self.enqueueLog(taskID: task.id, line: line) }
+                        },
+                        progressHandler: { snapshot in
+                            Task { await self.sendManagedCodexProgress(taskID: task.id, snapshot: snapshot) }
+                        },
+                        completion: { terminal in
+                            Task {
+                                await self.completeTask(
+                                    taskID: task.id,
+                                    result: terminal.executionResult,
+                                    managedSnapshot: terminal.snapshot
+                                )
+                            }
+                        }
+                    )
+
+                    switch recovery {
+                    case let .attached(controller):
+                        runningTasks[task.id] = .codex(controller)
+                    case let .finished(terminal):
+                        await completeTask(
+                            taskID: task.id,
+                            result: terminal.executionResult,
+                            managedSnapshot: terminal.snapshot
+                        )
+                    case .unavailable:
+                        try await stageRestoreFailure(taskID: taskID, summary: "agent restarted")
+                    }
+                }
+            } catch {
+                try await stageRestoreFailure(taskID: taskID, summary: "agent restarted: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -203,7 +333,7 @@ actor OrchardAgentService {
             try await sendMessage(.logBatch(AgentLogBatchPayload(taskID: taskID, lines: lines)))
             pendingLogs.removeValue(forKey: taskID)
         } catch {
-            print("[OrchardAgent] log flush failed for \(taskID): \(error)")
+            handleSocketSendFailure(error, context: "log flush failed for \(taskID)")
         }
     }
 
@@ -213,6 +343,14 @@ actor OrchardAgentService {
             await flushLogs(for: taskID)
         }
         logFlushTask = nil
+    }
+
+    private func flushPendingManagedCodexProgress() async {
+        let snapshots = pendingManagedCodexProgress
+        for taskID in snapshots.keys.sorted() {
+            guard let snapshot = snapshots[taskID] else { continue }
+            await sendManagedCodexProgress(taskID: taskID, snapshot: snapshot)
+        }
     }
 
     private func flushPendingTaskUpdates() async throws {
@@ -228,23 +366,59 @@ actor OrchardAgentService {
     private func sendHeartbeat() async {
         do {
             try await sendMessage(.heartbeat(AgentHeartbeatPayload(
-                metrics: metricsCollector.snapshot(runningTasks: runningTasks.count),
+                metrics: currentDeviceMetrics(),
                 runningTaskIDs: runningTaskIDs()
             )))
             try await flushPendingTaskUpdates()
             await flushPendingLogs()
+            await flushPendingManagedCodexProgress()
         } catch {
             guard !shouldStop(for: error), !isExpectedDisconnect(error) else {
                 return
             }
-            print("[OrchardAgent] heartbeat failed: \(error)")
+            handleSocketSendFailure(error, context: "heartbeat failed")
         }
     }
 
     private func sendTerminalUpdate(_ payload: AgentTaskUpdatePayload) async throws {
+        try await stagePendingTaskUpdate(payload)
+        try await flushPendingTaskUpdates()
+    }
+
+    private func sendManagedCodexProgress(taskID: String, snapshot: ManagedCodexTaskSnapshot) async {
+        pendingManagedCodexProgress[taskID] = snapshot
+        let payload = AgentTaskUpdatePayload(
+            taskID: taskID,
+            status: .running,
+            summary: snapshot.summary,
+            managedRunStatus: snapshot.managedRunStatus,
+            pid: snapshot.pid,
+            codexSessionID: snapshot.codexSessionID,
+            lastUserPrompt: snapshot.lastUserPrompt,
+            lastAssistantPreview: snapshot.lastAssistantPreview
+        )
+
+        do {
+            try await sendMessage(.taskUpdate(payload))
+        } catch {
+            guard !shouldStop(for: error), !isExpectedDisconnect(error) else {
+                return
+            }
+            handleSocketSendFailure(error, context: "managed codex progress update failed for \(taskID)")
+        }
+    }
+
+    private func stagePendingTaskUpdate(_ payload: AgentTaskUpdatePayload) async throws {
         try await stateStore.stageTaskUpdate(payload)
         pendingTaskUpdates[payload.taskID] = payload
-        try await flushPendingTaskUpdates()
+    }
+
+    private func stageRestoreFailure(taskID: String, summary: String) async throws {
+        try await stagePendingTaskUpdate(AgentTaskUpdatePayload(
+            taskID: taskID,
+            status: .failed,
+            summary: summary
+        ))
     }
 
     private func sendMessage(_ message: AgentSocketMessage) async throws {
@@ -257,8 +431,100 @@ actor OrchardAgentService {
         try await webSocketTask.send(.string(text))
     }
 
+    private func handleSocketSendFailure(_ error: Error, context: String) {
+        print("[OrchardAgent] \(context): \(error)")
+        disconnectCurrentSession()
+    }
+
+    private func disconnectCurrentSession() {
+        guard let socket = webSocketTask else {
+            return
+        }
+        webSocketTask = nil
+        socket.cancel(with: .goingAway, reason: nil)
+    }
+
     private func runningTaskIDs() -> [String] {
         runningTasks.keys.sorted()
+    }
+
+    private func currentDeviceMetrics() -> DeviceMetrics {
+        metricsCollector.snapshot(
+            runningTasks: runningTasks.count,
+            codexDesktop: codexDesktopMetricsCollector.snapshot()
+        )
+    }
+
+    private func replayRunningTaskState() async {
+        let tasks = runningTasks
+        for taskID in tasks.keys.sorted() {
+            guard
+                let handle = tasks[taskID],
+                case let .codex(controller) = handle,
+                let snapshot = await controller.currentSnapshot()
+            else {
+                continue
+            }
+            await sendManagedCodexProgress(taskID: taskID, snapshot: snapshot)
+        }
+    }
+
+    private func startProcessBackedTask(_ task: TaskRecord, cwd: URL) async throws {
+        let runner = TaskRunnerFactory.runner(for: task.kind)
+        let launchSpec = try runner.makeLaunchSpec(task: task, cwd: cwd, config: config)
+        let controller = try TaskProcessController(
+            task: task,
+            runtimeDirectory: tasksDirectory.appendingPathComponent(task.id, isDirectory: true),
+            launchSpec: launchSpec,
+            lineHandler: { line in
+                Task { await self.enqueueLog(taskID: task.id, line: line) }
+            },
+            completion: { result in
+                Task { await self.completeTask(taskID: task.id, result: result) }
+            }
+        )
+
+        runningTasks[task.id] = .process(controller)
+        try await stateStore.markTaskStarted(task.id)
+        do {
+            try controller.start()
+        } catch {
+            runningTasks.removeValue(forKey: task.id)
+            try await sendTerminalUpdate(AgentTaskUpdatePayload(taskID: task.id, status: .failed, summary: String(describing: error)))
+        }
+    }
+
+    private func startManagedCodexTask(_ task: TaskRecord, cwd: URL) async throws {
+        let controller = try ManagedCodexTaskController(
+            task: task,
+            runtimeDirectory: tasksDirectory.appendingPathComponent(task.id, isDirectory: true),
+            cwd: cwd,
+            codexBinaryPath: config.codexBinaryPath,
+            lineHandler: { line in
+                Task { await self.enqueueLog(taskID: task.id, line: line) }
+            },
+            progressHandler: { snapshot in
+                Task { await self.sendManagedCodexProgress(taskID: task.id, snapshot: snapshot) }
+            },
+            completion: { terminal in
+                Task {
+                    await self.completeTask(
+                        taskID: task.id,
+                        result: terminal.executionResult,
+                        managedSnapshot: terminal.snapshot
+                    )
+                }
+            }
+        )
+
+        runningTasks[task.id] = .codex(controller)
+        try await stateStore.markTaskStarted(task.id)
+        do {
+            try await controller.start()
+        } catch {
+            runningTasks.removeValue(forKey: task.id)
+            try await sendTerminalUpdate(AgentTaskUpdatePayload(taskID: task.id, status: .failed, summary: String(describing: error)))
+        }
     }
 
     private func nextBackoff(from current: UInt64) -> UInt64 {
@@ -283,5 +549,44 @@ actor OrchardAgentService {
     private func isExpectedDisconnect(_ error: Error) -> Bool {
         let nsError = error as NSError
         return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+    }
+
+    private func startLocalStatusPageIfNeeded() {
+        guard config.localStatusPageEnabled, statusPageTask == nil else {
+            return
+        }
+
+        do {
+            let server = AgentStatusHTTPServer(options: try makeLocalStatusPageOptions())
+            statusPageTask = Task {
+                do {
+                    try await server.run()
+                } catch is CancellationError {
+                    return
+                } catch {
+                    print("[OrchardAgent] local status page failed: \(error.localizedDescription)")
+                }
+            }
+        } catch {
+            print("[OrchardAgent] local status page failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func stopLocalStatusPage() {
+        statusPageTask?.cancel()
+        statusPageTask = nil
+    }
+
+    private func makeLocalStatusPageOptions() throws -> AgentStatusOptions {
+        try AgentStatusOptions(
+            configURL: configURL ?? OrchardAgentPaths.configURL(),
+            stateURL: stateURL ?? OrchardAgentPaths.stateURL(),
+            tasksDirectoryURL: tasksDirectory,
+            includeRemote: true,
+            accessKey: config.controlPlaneAccessKey ?? ProcessInfo.processInfo.environment["ORCHARD_ACCESS_KEY"],
+            serve: true,
+            bindHost: config.localStatusPageHost,
+            port: config.localStatusPagePort
+        )
     }
 }

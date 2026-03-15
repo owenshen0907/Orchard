@@ -171,7 +171,7 @@ final class OrchardControlPlaneStore: @unchecked Sendable {
             workspaceID: request.workspaceID,
             relativePath: request.relativePath,
             preferredDeviceID: request.preferredDeviceID,
-            payload: .codex(CodexTaskPayload(prompt: request.prompt))
+            payload: .codex(CodexTaskPayload(prompt: request.prompt, driver: .codexCLI))
         )
 
         try await db.transaction { transaction in

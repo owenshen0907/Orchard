@@ -1,5 +1,7 @@
 .build/
 .swiftpm/
+.tmp-clang-cache/
+.tmp-swiftpm-cache/
 Packages/
 DerivedData/
 .DS_Store

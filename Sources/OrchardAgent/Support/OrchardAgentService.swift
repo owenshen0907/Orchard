@@ -4,22 +4,22 @@ import OrchardCore
 
 private enum RunningTaskHandle {
     case process(TaskProcessController)
-    case codex(ManagedCodexTaskController)
+    case conversation(OrchardRuntimeConversationController)
 
     func requestStop() async {
         switch self {
         case let .process(controller):
             controller.requestStop()
-        case let .codex(controller):
+        case let .conversation(controller):
             await controller.requestStop()
         }
     }
 
-    var managedCodexController: ManagedCodexTaskController? {
+    var conversationController: OrchardRuntimeConversationController? {
         switch self {
         case .process:
             return nil
-        case let .codex(controller):
+        case let .conversation(controller):
             return controller
         }
     }
@@ -40,7 +40,7 @@ actor OrchardAgentService {
     private var webSocketTask: URLSessionWebSocketTask?
     private var runningTasks: [String: RunningTaskHandle] = [:]
     private var pendingLogs: [String: [String]] = [:]
-    private var pendingManagedCodexProgress: [String: ManagedCodexTaskSnapshot] = [:]
+    private var pendingManagedConversationProgress: [String: ManagedCodexTaskSnapshot] = [:]
     private var logFlushTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private var statusPageTask: Task<Void, Never>?
@@ -136,7 +136,7 @@ actor OrchardAgentService {
         try await flushPendingTaskUpdates()
         await flushPendingLogs()
         await sendHeartbeat()
-        await flushPendingManagedCodexProgress()
+        await flushPendingManagedConversationProgress()
         await replayRunningTaskState()
 
         heartbeatTask = Task { [heartbeatInterval = config.heartbeatIntervalSeconds] in
@@ -209,7 +209,7 @@ actor OrchardAgentService {
         case .shell:
             try await startProcessBackedTask(task, cwd: cwd)
         case .codex:
-            try await startManagedCodexTask(task, cwd: cwd)
+            try await startManagedConversationTask(task, cwd: cwd)
         }
     }
 
@@ -219,7 +219,11 @@ actor OrchardAgentService {
         managedSnapshot: ManagedCodexTaskSnapshot? = nil
     ) async {
         runningTasks.removeValue(forKey: taskID)
-        pendingManagedCodexProgress.removeValue(forKey: taskID)
+        pendingManagedConversationProgress.removeValue(forKey: taskID)
+        persistTerminalTaskRecord(
+            taskID: taskID,
+            result: result
+        )
         do {
             await flushLogs(for: taskID)
             try await sendTerminalUpdate(AgentTaskUpdatePayload(
@@ -236,6 +240,32 @@ actor OrchardAgentService {
         } catch {
             handleSocketSendFailure(error, context: "failed to send completion for \(taskID)")
         }
+    }
+
+    private func persistTerminalTaskRecord(
+        taskID: String,
+        result: TaskExecutionResult
+    ) {
+        let runtimeDirectory = tasksDirectory.appendingPathComponent(taskID, isDirectory: true)
+        guard var task = try? TaskProcessController.loadPersistedTask(runtimeDirectory: runtimeDirectory) else {
+            return
+        }
+
+        let now = Date()
+        task.status = result.status
+        task.updatedAt = now
+        task.finishedAt = task.finishedAt ?? now
+        task.exitCode = result.exitCode
+        task.summary = result.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? task.summary : result.summary
+        if result.status == .cancelled {
+            task.stopRequestedAt = task.stopRequestedAt ?? now
+        }
+
+        let taskURL = runtimeDirectory.appendingPathComponent("task.json", isDirectory: false)
+        guard let data = try? OrchardJSON.encoder.encode(task) else {
+            return
+        }
+        try? data.write(to: taskURL, options: .atomic)
     }
 
     private func restoreActiveTasks(taskIDs: [String]) async throws {
@@ -281,16 +311,16 @@ actor OrchardAgentService {
                         try await stageRestoreFailure(taskID: taskID, summary: "agent restarted")
                     }
                 case .codex:
-                    let recovery = try await ManagedCodexTaskController.recover(
+                    let driver = try OrchardRuntimeConversationDriverFactory.driver(for: task, config: config)
+                    let recovery = try await driver.recoverController(context: OrchardRuntimeConversationLaunchContext(
                         task: task,
                         runtimeDirectory: runtimeDirectory,
                         cwd: cwd,
-                        codexBinaryPath: config.codexBinaryPath,
                         lineHandler: { line in
                             Task { await self.enqueueLog(taskID: task.id, line: line) }
                         },
                         progressHandler: { snapshot in
-                            Task { await self.sendManagedCodexProgress(taskID: task.id, snapshot: snapshot) }
+                            Task { await self.sendManagedConversationProgress(taskID: task.id, snapshot: snapshot) }
                         },
                         completion: { terminal in
                             Task {
@@ -301,11 +331,11 @@ actor OrchardAgentService {
                                 )
                             }
                         }
-                    )
+                    ))
 
                     switch recovery {
                     case let .attached(controller):
-                        runningTasks[task.id] = .codex(controller)
+                        runningTasks[task.id] = .conversation(controller)
                     case let .finished(terminal):
                         await completeTask(
                             taskID: task.id,
@@ -356,11 +386,11 @@ actor OrchardAgentService {
         logFlushTask = nil
     }
 
-    private func flushPendingManagedCodexProgress() async {
-        let snapshots = pendingManagedCodexProgress
+    private func flushPendingManagedConversationProgress() async {
+        let snapshots = pendingManagedConversationProgress
         for taskID in snapshots.keys.sorted() {
             guard let snapshot = snapshots[taskID] else { continue }
-            await sendManagedCodexProgress(taskID: taskID, snapshot: snapshot)
+            await sendManagedConversationProgress(taskID: taskID, snapshot: snapshot)
         }
     }
 
@@ -382,7 +412,7 @@ actor OrchardAgentService {
             )))
             try await flushPendingTaskUpdates()
             await flushPendingLogs()
-            await flushPendingManagedCodexProgress()
+            await flushPendingManagedConversationProgress()
         } catch {
             guard !shouldStop(for: error), !isExpectedDisconnect(error) else {
                 return
@@ -396,8 +426,8 @@ actor OrchardAgentService {
         try await flushPendingTaskUpdates()
     }
 
-    private func sendManagedCodexProgress(taskID: String, snapshot: ManagedCodexTaskSnapshot) async {
-        pendingManagedCodexProgress[taskID] = snapshot
+    private func sendManagedConversationProgress(taskID: String, snapshot: ManagedCodexTaskSnapshot) async {
+        pendingManagedConversationProgress[taskID] = snapshot
         let payload = AgentTaskUpdatePayload(
             taskID: taskID,
             status: .running,
@@ -425,6 +455,10 @@ actor OrchardAgentService {
     }
 
     private func stageRestoreFailure(taskID: String, summary: String) async throws {
+        persistTerminalTaskRecord(
+            taskID: taskID,
+            result: TaskExecutionResult(status: .failed, exitCode: nil, summary: summary)
+        )
         try await stagePendingTaskUpdate(AgentTaskUpdatePayload(
             taskID: taskID,
             status: .failed,
@@ -471,12 +505,12 @@ actor OrchardAgentService {
         for taskID in tasks.keys.sorted() {
             guard
                 let handle = tasks[taskID],
-                case let .codex(controller) = handle,
+                let controller = handle.conversationController,
                 let snapshot = await controller.currentSnapshot()
             else {
                 continue
             }
-            await sendManagedCodexProgress(taskID: taskID, snapshot: snapshot)
+            await sendManagedConversationProgress(taskID: taskID, snapshot: snapshot)
         }
     }
 
@@ -501,22 +535,26 @@ actor OrchardAgentService {
             try controller.start()
         } catch {
             runningTasks.removeValue(forKey: task.id)
+            persistTerminalTaskRecord(
+                taskID: task.id,
+                result: TaskExecutionResult(status: .failed, exitCode: nil, summary: String(describing: error))
+            )
             try await sendTerminalUpdate(AgentTaskUpdatePayload(taskID: task.id, status: .failed, summary: String(describing: error)))
         }
     }
 
     @discardableResult
-    private func startManagedCodexTask(_ task: TaskRecord, cwd: URL) async throws -> Bool {
-        let controller = try ManagedCodexTaskController(
+    private func startManagedConversationTask(_ task: TaskRecord, cwd: URL) async throws -> Bool {
+        let driver = try OrchardRuntimeConversationDriverFactory.driver(for: task, config: config)
+        let controller = try driver.makeController(context: OrchardRuntimeConversationLaunchContext(
             task: task,
             runtimeDirectory: tasksDirectory.appendingPathComponent(task.id, isDirectory: true),
             cwd: cwd,
-            codexBinaryPath: config.codexBinaryPath,
             lineHandler: { line in
                 Task { await self.enqueueLog(taskID: task.id, line: line) }
             },
             progressHandler: { snapshot in
-                Task { await self.sendManagedCodexProgress(taskID: task.id, snapshot: snapshot) }
+                Task { await self.sendManagedConversationProgress(taskID: task.id, snapshot: snapshot) }
             },
             completion: { terminal in
                 Task {
@@ -527,15 +565,19 @@ actor OrchardAgentService {
                     )
                 }
             }
-        )
+        ))
 
-        runningTasks[task.id] = .codex(controller)
+        runningTasks[task.id] = .conversation(controller)
         try await stateStore.markTaskStarted(task.id)
         do {
             try await controller.start()
             return true
         } catch {
             runningTasks.removeValue(forKey: task.id)
+            persistTerminalTaskRecord(
+                taskID: task.id,
+                result: TaskExecutionResult(status: .failed, exitCode: nil, summary: String(describing: error))
+            )
             try await sendTerminalUpdate(AgentTaskUpdatePayload(taskID: task.id, status: .failed, summary: String(describing: error)))
             return false
         }
@@ -584,7 +626,7 @@ actor OrchardAgentService {
             relativePath: relativePath,
             priority: .normal,
             status: .running,
-            payload: .codex(CodexTaskPayload(prompt: prompt)),
+            payload: .codex(CodexTaskPayload(prompt: prompt, driver: request.driver)),
             preferredDeviceID: config.deviceID,
             assignedDeviceID: config.deviceID,
             createdAt: now,
@@ -592,7 +634,7 @@ actor OrchardAgentService {
             startedAt: now
         )
 
-        let didStart = try await startManagedCodexTask(task, cwd: cwd)
+        let didStart = try await startManagedConversationTask(task, cwd: cwd)
         guard didStart else {
             throw NSError(domain: "OrchardAgent", code: 35, userInfo: [
                 NSLocalizedDescriptionKey: "本地任务启动失败，请查看待回传更新或本地日志。",
@@ -610,7 +652,7 @@ actor OrchardAgentService {
                 NSLocalizedDescriptionKey: "继续内容不能为空。",
             ])
         }
-        guard let controller = runningTasks[trimmedTaskID]?.managedCodexController else {
+        guard let controller = runningTasks[trimmedTaskID]?.conversationController else {
             throw NSError(domain: "OrchardAgent", code: 37, userInfo: [
                 NSLocalizedDescriptionKey: "没有找到运行中的本地 Codex 任务：\(trimmedTaskID)",
             ])
@@ -620,7 +662,7 @@ actor OrchardAgentService {
 
     func interruptLocalManagedTask(taskID: String) async throws {
         let trimmedTaskID = taskID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let controller = runningTasks[trimmedTaskID]?.managedCodexController else {
+        guard let controller = runningTasks[trimmedTaskID]?.conversationController else {
             throw NSError(domain: "OrchardAgent", code: 38, userInfo: [
                 NSLocalizedDescriptionKey: "没有找到运行中的本地 Codex 任务：\(trimmedTaskID)",
             ])

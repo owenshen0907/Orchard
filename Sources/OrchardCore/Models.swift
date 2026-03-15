@@ -44,6 +44,20 @@ public enum TaskPriority: String, Codable, CaseIterable, Sendable {
     case high
 }
 
+public enum ConversationDriverKind: String, Codable, CaseIterable, Sendable {
+    case codexCLI
+    case claudeCode
+
+    public var displayName: String {
+        switch self {
+        case .codexCLI:
+            return "Codex CLI"
+        case .claudeCode:
+            return "Claude Code"
+        }
+    }
+}
+
 public enum TaskStatus: String, Codable, CaseIterable, Sendable {
     case queued
     case running
@@ -227,9 +241,11 @@ public struct ShellTaskPayload: Codable, Hashable, Sendable {
 
 public struct CodexTaskPayload: Codable, Hashable, Sendable {
     public var prompt: String
+    public var driver: ConversationDriverKind?
 
-    public init(prompt: String) {
+    public init(prompt: String, driver: ConversationDriverKind? = nil) {
         self.prompt = prompt
+        self.driver = driver
     }
 }
 
@@ -241,6 +257,7 @@ public enum TaskPayload: Codable, Hashable, Sendable {
         case type
         case command
         case prompt
+        case driver
     }
 
     public init(from decoder: Decoder) throws {
@@ -250,7 +267,10 @@ public enum TaskPayload: Codable, Hashable, Sendable {
         case .shell:
             self = .shell(ShellTaskPayload(command: try container.decode(String.self, forKey: .command)))
         case .codex:
-            self = .codex(CodexTaskPayload(prompt: try container.decode(String.self, forKey: .prompt)))
+            self = .codex(CodexTaskPayload(
+                prompt: try container.decode(String.self, forKey: .prompt),
+                driver: try container.decodeIfPresent(ConversationDriverKind.self, forKey: .driver)
+            ))
         }
     }
 
@@ -263,6 +283,7 @@ public enum TaskPayload: Codable, Hashable, Sendable {
         case let .codex(payload):
             try container.encode(TaskKind.codex, forKey: .type)
             try container.encode(payload.prompt, forKey: .prompt)
+            try container.encodeIfPresent(payload.driver, forKey: .driver)
         }
     }
 

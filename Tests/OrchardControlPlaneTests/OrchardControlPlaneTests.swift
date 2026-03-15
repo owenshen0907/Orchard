@@ -292,6 +292,13 @@ final class OrchardControlPlaneTests: XCTestCase {
                     XCTAssertEqual(snapshot.managedRuns.first?.id, runID)
                     XCTAssertEqual(snapshot.managedRuns.first?.preferredDeviceID, "mac-1")
                     XCTAssertEqual(snapshot.tasks.count, 1)
+                    guard let task = snapshot.tasks.first else {
+                        return XCTFail("Expected task in snapshot")
+                    }
+                    guard case let .codex(payload) = task.payload else {
+                        return XCTFail("Expected codex payload")
+                    }
+                    XCTAssertEqual(payload.driver, .codexCLI)
                 }
             })
 

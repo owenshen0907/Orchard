@@ -47,6 +47,7 @@ struct AgentLocalManagedRunRequest: Codable, Sendable {
     var title: String?
     var workspaceID: String
     var relativePath: String?
+    var driver: ConversationDriverKind?
     var prompt: String
 }
 
@@ -57,6 +58,12 @@ struct AgentStatusLocalActions: Sendable {
     var stopTask: @Sendable (String) async throws -> Void
 }
 
+struct AgentStatusLocalCodexActions: Sendable {
+    var readSession: @Sendable (String) async throws -> CodexSessionDetail
+    var continueSession: @Sendable (String, String) async throws -> CodexSessionDetail
+    var interruptSession: @Sendable (String) async throws -> CodexSessionDetail
+}
+
 struct AgentStatusSnapshot: Codable, Sendable {
     var generatedAt: Date
     var deviceID: String
@@ -64,6 +71,8 @@ struct AgentStatusSnapshot: Codable, Sendable {
     var hostName: String
     var serverURL: String
     var workspaces: [WorkspaceDefinition]
+    var workspacePathOptions: [String: [String]]
+    var workspaceProjects: [String: [AgentProjectSummary]]
     var local: AgentLocalStatusSnapshot
     var remote: AgentRemoteStatusSnapshot?
     var remoteSkippedReason: String?
@@ -73,12 +82,23 @@ struct AgentLocalStatusSnapshot: Codable, Sendable {
     var metrics: DeviceMetrics
     var activeTaskIDs: [String]
     var activeTasks: [AgentLocalTaskSnapshot]
+    var recentTasks: [AgentLocalTaskSnapshot]
+    var codexSessions: [AgentLocalCodexSessionSnapshot]
     var pendingUpdates: [AgentTaskUpdatePayload]
     var warnings: [String]
 }
 
+struct AgentProjectSummary: Codable, Sendable {
+    var key: String
+    var name: String
+    var path: String
+    var workspaceID: String?
+    var relativePath: String?
+}
+
 struct AgentLocalTaskSnapshot: Codable, Sendable {
     var task: TaskRecord
+    var project: AgentProjectSummary
     var runtimeDirectoryPath: String
     var logPath: String
     var recentLogLines: [String]
@@ -93,6 +113,11 @@ struct AgentLocalTaskSnapshot: Codable, Sendable {
     var lastUserPrompt: String?
     var lastAssistantPreview: String?
     var runtimeWarning: String?
+}
+
+struct AgentLocalCodexSessionSnapshot: Codable, Sendable {
+    var session: CodexSessionSummary
+    var project: AgentProjectSummary
 }
 
 struct AgentRemoteStatusSnapshot: Codable, Sendable {
@@ -110,26 +135,35 @@ struct AgentRemoteStatusSnapshot: Codable, Sendable {
 
 struct AgentStatusService {
     typealias RemoteFetcher = @Sendable (ResolvedAgentConfig, String, Int) async throws -> AgentRemoteStatusSnapshot
+    typealias LocalCodexSessionsFetcher = @Sendable (ResolvedAgentConfig, Int) async throws -> [CodexSessionSummary]
 
     var metricsCollector: SystemMetricsCollector
     var codexDesktopMetricsCollector: CodexDesktopMetricsCollector
     var remoteFetcher: RemoteFetcher
+    var localCodexSessionsFetcher: LocalCodexSessionsFetcher
 
     init(
         metricsCollector: SystemMetricsCollector = SystemMetricsCollector(),
         codexDesktopMetricsCollector: CodexDesktopMetricsCollector = CodexDesktopMetricsCollector(),
-        remoteFetcher: @escaping RemoteFetcher = AgentStatusService.defaultRemoteFetcher
+        remoteFetcher: @escaping RemoteFetcher = AgentStatusService.defaultRemoteFetcher,
+        localCodexSessionsFetcher: @escaping LocalCodexSessionsFetcher = AgentStatusService.defaultLocalCodexSessionsFetcher
     ) {
         self.metricsCollector = metricsCollector
         self.codexDesktopMetricsCollector = codexDesktopMetricsCollector
         self.remoteFetcher = remoteFetcher
+        self.localCodexSessionsFetcher = localCodexSessionsFetcher
     }
 
     func snapshot(options: AgentStatusOptions) async throws -> AgentStatusSnapshot {
         let config = try AgentConfigLoader.load(from: options.configURL)
         let stateStore = AgentStateStore(url: options.stateURL)
         let bootstrap = try await stateStore.bootstrap()
-        let local = try loadLocalSnapshot(config: config, bootstrap: bootstrap, tasksDirectory: options.tasksDirectoryURL)
+        let local = try await loadLocalSnapshot(
+            config: config,
+            bootstrap: bootstrap,
+            tasksDirectory: options.tasksDirectoryURL,
+            limit: options.limit
+        )
 
         var remote: AgentRemoteStatusSnapshot?
         var remoteSkippedReason: String?
@@ -165,6 +199,8 @@ struct AgentStatusService {
             hostName: config.hostName,
             serverURL: config.serverURL.absoluteString,
             workspaces: config.workspaceRoots,
+            workspacePathOptions: workspacePathOptions(for: config.workspaceRoots),
+            workspaceProjects: workspaceProjectOptions(for: config.workspaceRoots),
             local: local,
             remote: remote,
             remoteSkippedReason: remoteSkippedReason
@@ -174,28 +210,97 @@ struct AgentStatusService {
     private func loadLocalSnapshot(
         config: ResolvedAgentConfig,
         bootstrap: AgentBootstrapState,
-        tasksDirectory: URL
-    ) throws -> AgentLocalStatusSnapshot {
+        tasksDirectory: URL,
+        limit: Int
+    ) async throws -> AgentLocalStatusSnapshot {
         let codexDesktop = codexDesktopMetricsCollector.snapshot()
         let metrics = metricsCollector.snapshot(
             runningTasks: bootstrap.activeTaskIDs.count,
             codexDesktop: codexDesktop
         )
+        let projectResolver = AgentProjectSummaryResolver(workspaces: config.workspaceRoots)
 
         var warnings: [String] = []
         let activeTasks = try bootstrap.activeTaskIDs.map { taskID in
             try loadLocalTaskSnapshot(taskID: taskID, tasksDirectory: tasksDirectory, warnings: &warnings)
+        }.map { task in
+            normalizeLoadedTaskSnapshot(task, isActive: true)
+        }.map { task in
+            enrich(task: task, projectResolver: projectResolver)
+        }
+        let recentTasks = try loadRecentTaskSnapshots(
+            excluding: Set(bootstrap.activeTaskIDs),
+            tasksDirectory: tasksDirectory,
+            limit: limit,
+            warnings: &warnings
+        ).map { task in
+            normalizeLoadedTaskSnapshot(task, isActive: false)
+        }.map { task in
+            enrich(task: task, projectResolver: projectResolver)
+        }
+        let codexSessions: [AgentLocalCodexSessionSnapshot]
+        do {
+            codexSessions = try await localCodexSessionsFetcher(config, limit)
+                .sorted(by: compareCodexSessions)
+                .map { session in
+                    AgentLocalCodexSessionSnapshot(
+                        session: session,
+                        project: projectResolver.resolve(for: session)
+                    )
+                }
+        } catch {
+            warnings.append("本机 Codex 会话读取失败：\(error.localizedDescription)")
+            codexSessions = []
         }
 
         return AgentLocalStatusSnapshot(
             metrics: metrics,
             activeTaskIDs: bootstrap.activeTaskIDs,
             activeTasks: activeTasks,
+            recentTasks: recentTasks,
+            codexSessions: codexSessions,
             pendingUpdates: bootstrap.pendingTaskUpdates.sorted { lhs, rhs in
                 lhs.taskID < rhs.taskID
             },
             warnings: warnings
         )
+    }
+
+    private func loadRecentTaskSnapshots(
+        excluding excludedTaskIDs: Set<String>,
+        tasksDirectory: URL,
+        limit: Int,
+        warnings: inout [String]
+    ) throws -> [AgentLocalTaskSnapshot] {
+        guard FileManager.default.fileExists(atPath: tasksDirectory.path) else {
+            return []
+        }
+
+        let directoryURLs = try FileManager.default.contentsOfDirectory(
+            at: tasksDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )
+
+        let taskIDs = directoryURLs
+            .compactMap { url -> (taskID: String, modifiedAt: Date)? in
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey])
+                guard values?.isDirectory == true else { return nil }
+                let taskID = url.lastPathComponent
+                guard !excludedTaskIDs.contains(taskID) else { return nil }
+                return (taskID, mostRecentTimestamp(for: url))
+            }
+            .sorted { lhs, rhs in
+                if lhs.modifiedAt == rhs.modifiedAt {
+                    return lhs.taskID < rhs.taskID
+                }
+                return lhs.modifiedAt > rhs.modifiedAt
+            }
+            .prefix(max(1, limit))
+
+        return try taskIDs.map { candidate in
+            try loadLocalTaskSnapshot(taskID: candidate.taskID, tasksDirectory: tasksDirectory, warnings: &warnings)
+        }
     }
 
     private func loadLocalTaskSnapshot(
@@ -208,8 +313,10 @@ struct AgentStatusService {
 
         guard FileManager.default.fileExists(atPath: runtimeDirectory.path) else {
             warnings.append("任务 \(taskID) 被标记为活动中，但本地运行目录不存在。")
+            let task = missingTaskRecord(taskID: taskID)
             return AgentLocalTaskSnapshot(
-                task: missingTaskRecord(taskID: taskID),
+                task: task,
+                project: unresolvedProjectSummary(task: task, cwd: nil),
                 runtimeDirectoryPath: runtimeDirectory.path,
                 logPath: logURL.path,
                 recentLogLines: [],
@@ -232,8 +339,10 @@ struct AgentStatusService {
             task = try TaskProcessController.loadPersistedTask(runtimeDirectory: runtimeDirectory)
         } catch {
             warnings.append("任务 \(taskID) 的 task.json 无法读取：\(error.localizedDescription)")
+            let task = missingTaskRecord(taskID: taskID)
             return AgentLocalTaskSnapshot(
-                task: missingTaskRecord(taskID: taskID),
+                task: task,
+                project: unresolvedProjectSummary(task: task, cwd: nil),
                 runtimeDirectoryPath: runtimeDirectory.path,
                 logPath: logURL.path,
                 recentLogLines: [],
@@ -257,6 +366,7 @@ struct AgentStatusService {
             let recentLogLines = readRecentLogLines(logURL: logURL)
             return AgentLocalTaskSnapshot(
                 task: task,
+                project: unresolvedProjectSummary(task: task, cwd: runtime?.cwd),
                 runtimeDirectoryPath: runtimeDirectory.path,
                 logPath: logURL.path,
                 recentLogLines: recentLogLines,
@@ -277,6 +387,7 @@ struct AgentStatusService {
             let recentLogLines = readRecentLogLines(logURL: logURL)
             return AgentLocalTaskSnapshot(
                 task: task,
+                project: unresolvedProjectSummary(task: task, cwd: runtime?.cwd),
                 runtimeDirectoryPath: runtimeDirectory.path,
                 logPath: logURL.path,
                 recentLogLines: recentLogLines,
@@ -295,7 +406,157 @@ struct AgentStatusService {
         }
     }
 
-    private func readRecentLogLines(logURL: URL, limit: Int = 6) -> [String] {
+    private func normalizeLoadedTaskSnapshot(
+        _ task: AgentLocalTaskSnapshot,
+        isActive: Bool
+    ) -> AgentLocalTaskSnapshot {
+        var normalized = task
+        if normalized.task.exitCode == nil {
+            normalized.task.exitCode = readExitCode(runtimeDirectoryPath: normalized.runtimeDirectoryPath)
+        }
+        normalized.managedRunStatus = effectiveManagedRunStatus(
+            managedRunStatus: normalized.managedRunStatus,
+            taskStatus: normalized.task.status
+        )
+
+        guard !isActive else {
+            return normalized
+        }
+
+        guard let inferred = inferredTerminalState(for: normalized) else {
+            return normalized
+        }
+
+        normalized.task.status = inferred.taskStatus
+        normalized.managedRunStatus = inferred.managedRunStatus
+        normalized.task.summary = normalized.task.summary?.trimmedOrEmpty.nilIfEmpty ?? inferred.summary
+        normalized.task.finishedAt = normalized.task.finishedAt
+            ?? normalized.lastSeenAt
+            ?? normalized.startedAt
+            ?? normalized.task.startedAt
+            ?? normalized.task.updatedAt
+        if let finishedAt = normalized.task.finishedAt, finishedAt > normalized.task.updatedAt {
+            normalized.task.updatedAt = finishedAt
+        }
+        return normalized
+    }
+
+    private func inferredTerminalState(
+        for task: AgentLocalTaskSnapshot
+    ) -> (taskStatus: TaskStatus, managedRunStatus: ManagedRunStatus?, summary: String?)? {
+        if let managedRunStatus = task.managedRunStatus, managedRunStatus.isTerminal {
+            return (
+                taskStatus(for: managedRunStatus),
+                managedRunStatus,
+                task.task.summary?.trimmedOrEmpty.nilIfEmpty
+                    ?? task.lastAssistantPreview?.trimmedOrEmpty.nilIfEmpty
+            )
+        }
+
+        if task.task.status.isTerminal {
+            return (
+                task.task.status,
+                effectiveManagedRunStatus(
+                    managedRunStatus: task.managedRunStatus,
+                    taskStatus: task.task.status
+                ),
+                task.task.summary?.trimmedOrEmpty.nilIfEmpty
+            )
+        }
+
+        if let exitCode = task.task.exitCode {
+            let taskStatus: TaskStatus
+            let summary: String
+            if task.stopRequested || task.task.stopRequestedAt != nil {
+                taskStatus = .cancelled
+                summary = "Task cancelled after stop request."
+            } else if exitCode == 0 {
+                taskStatus = .succeeded
+                summary = "Task completed successfully."
+            } else {
+                taskStatus = .failed
+                summary = "Task exited with code \(exitCode)."
+            }
+
+            return (
+                taskStatus,
+                task.task.kind == .codex
+                    ? effectiveManagedRunStatus(managedRunStatus: task.managedRunStatus, taskStatus: taskStatus)
+                    : nil,
+                task.task.summary?.trimmedOrEmpty.nilIfEmpty ?? summary
+            )
+        }
+
+        if task.stopRequested || task.task.stopRequestedAt != nil {
+            return (
+                .cancelled,
+                task.task.kind == .codex ? .cancelled : nil,
+                task.task.summary?.trimmedOrEmpty.nilIfEmpty ?? "Task cancelled after stop request."
+            )
+        }
+
+        let fallbackSummary = task.task.summary?.trimmedOrEmpty.nilIfEmpty
+            ?? task.runtimeWarning?.trimmedOrEmpty.nilIfEmpty
+            ?? (task.task.kind == .codex
+                ? "本地 Codex 任务已脱离活动列表，但本地状态仍停留在运行中；通常是启动失败或历史残留。"
+                : "本地任务已脱离活动列表，但本地状态仍停留在运行中；通常是历史残留。")
+
+        return (
+            .failed,
+            task.task.kind == .codex ? .failed : nil,
+            fallbackSummary
+        )
+    }
+
+    private func effectiveManagedRunStatus(
+        managedRunStatus: ManagedRunStatus?,
+        taskStatus: TaskStatus
+    ) -> ManagedRunStatus? {
+        if let managedRunStatus, managedRunStatus.isTerminal {
+            return managedRunStatus
+        }
+
+        guard taskStatus.isTerminal else {
+            return managedRunStatus
+        }
+
+        switch taskStatus {
+        case .succeeded:
+            return .succeeded
+        case .failed:
+            return .failed
+        case .cancelled:
+            return .cancelled
+        case .queued, .running, .stopRequested:
+            return managedRunStatus
+        }
+    }
+
+    private func taskStatus(for managedRunStatus: ManagedRunStatus) -> TaskStatus {
+        switch managedRunStatus {
+        case .succeeded:
+            return .succeeded
+        case .cancelled, .interrupted:
+            return .cancelled
+        case .failed:
+            return .failed
+        case .queued, .launching, .running, .waitingInput, .interrupting, .stopRequested:
+            return .failed
+        }
+    }
+
+    private func readExitCode(runtimeDirectoryPath: String) -> Int? {
+        let exitStatusURL = URL(fileURLWithPath: runtimeDirectoryPath, isDirectory: true)
+            .appendingPathComponent("exit-status", isDirectory: false)
+        guard let data = try? Data(contentsOf: exitStatusURL) else {
+            return nil
+        }
+
+        let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return Int(text)
+    }
+
+    private func readRecentLogLines(logURL: URL, limit: Int = 24) -> [String] {
         guard
             FileManager.default.fileExists(atPath: logURL.path),
             let text = try? String(contentsOf: logURL, encoding: .utf8)
@@ -309,6 +570,105 @@ struct AgentStatusService {
             .filter { !$0.isEmpty }
             .suffix(limit)
             .map { $0 }
+    }
+
+    private func mostRecentTimestamp(for runtimeDirectory: URL) -> Date {
+        let candidates = [
+            runtimeDirectory.appendingPathComponent("runtime.json", isDirectory: false),
+            runtimeDirectory.appendingPathComponent("combined.log", isDirectory: false),
+            runtimeDirectory.appendingPathComponent("task.json", isDirectory: false),
+            runtimeDirectory.appendingPathComponent("exit-status", isDirectory: false),
+        ]
+
+        let timestamps = candidates.compactMap { url -> Date? in
+            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+            return try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        }
+
+        if let latest = timestamps.max() {
+            return latest
+        }
+
+        return (try? runtimeDirectory.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+            ?? .distantPast
+    }
+
+    private func workspacePathOptions(for workspaces: [WorkspaceDefinition]) -> [String: [String]] {
+        Dictionary(uniqueKeysWithValues: workspaces.map { workspace in
+            (workspace.id, immediateChildDirectories(rootPath: workspace.rootPath))
+        })
+    }
+
+    private func workspaceProjectOptions(for workspaces: [WorkspaceDefinition]) -> [String: [AgentProjectSummary]] {
+        let resolver = AgentProjectSummaryResolver(workspaces: workspaces)
+        return Dictionary(uniqueKeysWithValues: workspaces.map { workspace in
+            let projects = immediateChildDirectories(rootPath: workspace.rootPath)
+                .compactMap { relativePath -> AgentProjectSummary? in
+                    guard
+                        let url = try? OrchardWorkspacePath.resolve(
+                            rootPath: workspace.rootPath,
+                            relativePath: relativePath
+                        )
+                    else {
+                        return nil
+                    }
+                    return resolver.resolve(projectURL: url, workspaceID: workspace.id)
+                }
+            return (workspace.id, projects)
+        })
+    }
+
+    private func immediateChildDirectories(rootPath: String) -> [String] {
+        let rootURL = URL(fileURLWithPath: rootPath, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: rootURL.path) else {
+            return [""]
+        }
+
+        let directoryURLs = (try? FileManager.default.contentsOfDirectory(
+            at: rootURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        let names = directoryURLs.compactMap { url -> String? in
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+            return values?.isDirectory == true ? url.lastPathComponent : nil
+        }
+        .sorted { lhs, rhs in
+            lhs.localizedStandardCompare(rhs) == .orderedAscending
+        }
+
+        return [""] + names
+    }
+
+    private func enrich(
+        task: AgentLocalTaskSnapshot,
+        projectResolver: AgentProjectSummaryResolver
+    ) -> AgentLocalTaskSnapshot {
+        var enriched = task
+        enriched.project = projectResolver.resolve(for: task)
+        return enriched
+    }
+
+    private func unresolvedProjectSummary(task: TaskRecord, cwd: String?) -> AgentProjectSummary {
+        let fallbackPath = cwd?.trimmedOrEmpty.nilIfEmpty
+            ?? task.relativePath?.trimmedOrEmpty.nilIfEmpty
+            ?? task.workspaceID
+        let fallbackName = URL(fileURLWithPath: fallbackPath, isDirectory: true)
+            .lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+            ?? "未识别项目"
+        let workspaceID = task.workspaceID == "-" ? nil : task.workspaceID
+        let relativePath = task.relativePath?.trimmedOrEmpty.nilIfEmpty
+
+        return AgentProjectSummary(
+            key: fallbackPath,
+            name: fallbackName,
+            path: fallbackPath,
+            workspaceID: workspaceID,
+            relativePath: relativePath
+        )
     }
 
     private func loadShellRuntime(runtimeDirectory: URL) throws -> PersistedShellRuntimeRecord? {
@@ -400,6 +760,16 @@ struct AgentStatusService {
             fetchError: nil
         )
     }
+
+    private static func defaultLocalCodexSessionsFetcher(
+        config: ResolvedAgentConfig,
+        limit: Int
+    ) async throws -> [CodexSessionSummary] {
+        try await orchardWithTimeout(seconds: 5) {
+            let bridge = CodexAppServerBridge(config: config, sessionHydrationLimit: 0)
+            return try await bridge.listSessions(limit: limit)
+        }
+    }
 }
 
 enum AgentStatusRenderer {
@@ -455,6 +825,28 @@ enum AgentStatusRenderer {
         } else {
             snapshot.local.activeTasks.forEach { task in
                 lines.append(contentsOf: renderLocalTask(task))
+            }
+        }
+
+        lines.append("")
+        lines.append("最近本地任务")
+        if snapshot.local.recentTasks.isEmpty {
+            lines.append("- 当前没有最近结束的本地任务。")
+        } else {
+            snapshot.local.recentTasks.forEach { task in
+                lines.append(contentsOf: renderLocalTask(task))
+            }
+        }
+
+        lines.append("")
+        lines.append("本机 Codex 会话")
+        if snapshot.local.codexSessions.isEmpty {
+            lines.append("- 当前没有额外可观察的本机 Codex 会话。")
+        } else {
+            snapshot.local.codexSessions.forEach { codexSession in
+                let session = codexSession.session
+                let projectLabel = codexSession.project.name.trimmedOrEmpty.nilIfEmpty ?? codexSession.project.path
+                lines.append("- [\(session.state.statusTitle(lastTurnStatus: session.lastTurnStatus))] \(session.name?.trimmedOrEmpty.nilIfEmpty ?? session.preview.displaySnippet(limit: 48)) · \(projectLabel) · \(session.cwd)")
             }
         }
 
@@ -522,6 +914,7 @@ enum AgentStatusRenderer {
         let title = task.task.title.trimmedOrEmpty.nilIfEmpty ?? task.task.id
         lines.append("- [\(localTaskStatusTitle(task))] \(title)")
         lines.append("  任务: \(task.task.id) · \(task.task.kind.displayName) · 工作区 \(task.task.workspaceID)")
+        lines.append("  项目: \(task.project.name) · \(task.project.path)")
         if let relativePath = task.task.relativePath?.trimmedOrEmpty.nilIfEmpty {
             lines.append("  目录: \(relativePath)")
         }
@@ -594,6 +987,291 @@ private struct PersistedManagedCodexRuntimeRecord: Codable, Sendable {
     var lastManagedRunStatus: ManagedRunStatus?
     var lastUserPrompt: String?
     var lastAssistantPreview: String?
+}
+
+private final class AgentProjectSummaryResolver {
+    private let fileManager = FileManager.default
+    private let workspaceRoots: [String: URL]
+    private var cache: [String: AgentProjectSummary] = [:]
+
+    init(workspaces: [WorkspaceDefinition]) {
+        self.workspaceRoots = Dictionary(uniqueKeysWithValues: workspaces.map { workspace in
+            (
+                workspace.id,
+                URL(fileURLWithPath: workspace.rootPath, isDirectory: true)
+                    .standardizedFileURL
+                    .resolvingSymlinksInPath()
+            )
+        })
+    }
+
+    func resolve(for task: AgentLocalTaskSnapshot) -> AgentProjectSummary {
+        let workspaceID = task.task.workspaceID == "-" ? nil : task.task.workspaceID
+        if let projectURL = taskProjectURL(for: task, workspaceID: workspaceID) {
+            return resolve(projectURL: projectURL, workspaceID: workspaceID)
+        }
+        return fallbackSummary(
+            path: task.cwd?.trimmedOrEmpty.nilIfEmpty
+                ?? task.task.relativePath?.trimmedOrEmpty.nilIfEmpty
+                ?? workspaceID
+                ?? "未识别项目",
+            workspaceID: workspaceID
+        )
+    }
+
+    func resolve(for session: CodexSessionSummary) -> AgentProjectSummary {
+        let workspaceID = session.workspaceID?.trimmedOrEmpty.nilIfEmpty
+        if let projectURL = sessionProjectURL(for: session, workspaceID: workspaceID) {
+            return resolve(projectURL: projectURL, workspaceID: workspaceID)
+        }
+        return fallbackSummary(
+            path: session.cwd.trimmedOrEmpty.nilIfEmpty ?? workspaceID ?? "未识别项目",
+            workspaceID: workspaceID
+        )
+    }
+
+    func resolve(projectURL: URL, workspaceID: String?) -> AgentProjectSummary {
+        let directoryURL = standardDirectoryURL(projectURL)
+        let cacheKey = directoryURL.path
+        if let cached = cache[cacheKey] {
+            return cached
+        }
+
+        let summary = AgentProjectSummary(
+            key: cacheKey,
+            name: projectName(for: directoryURL),
+            path: directoryURL.path,
+            workspaceID: workspaceID,
+            relativePath: workspaceRelativePath(for: directoryURL, workspaceID: workspaceID)
+        )
+        cache[cacheKey] = summary
+        return summary
+    }
+
+    private func fallbackSummary(path: String, workspaceID: String?) -> AgentProjectSummary {
+        let normalizedPath = path.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "未识别项目"
+        let fallbackName = URL(fileURLWithPath: normalizedPath, isDirectory: true)
+            .lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+            ?? normalizedPath
+        return AgentProjectSummary(
+            key: normalizedPath,
+            name: fallbackName,
+            path: normalizedPath,
+            workspaceID: workspaceID,
+            relativePath: nil
+        )
+    }
+
+    private func taskProjectURL(for task: AgentLocalTaskSnapshot, workspaceID: String?) -> URL? {
+        if
+            let workspaceID,
+            let rootURL = workspaceRoots[workspaceID],
+            let relativePath = task.task.relativePath?.trimmedOrEmpty.nilIfEmpty,
+            let resolved = try? OrchardWorkspacePath.resolve(rootPath: rootURL.path, relativePath: relativePath)
+        {
+            return resolved
+        }
+        if let cwd = task.cwd?.trimmedOrEmpty.nilIfEmpty {
+            return URL(fileURLWithPath: cwd, isDirectory: true)
+        }
+        if let workspaceID, let rootURL = workspaceRoots[workspaceID] {
+            return rootURL
+        }
+        return nil
+    }
+
+    private func sessionProjectURL(for session: CodexSessionSummary, workspaceID: String?) -> URL? {
+        if let cwd = session.cwd.trimmedOrEmpty.nilIfEmpty {
+            return URL(fileURLWithPath: cwd, isDirectory: true)
+        }
+        if let workspaceID, let rootURL = workspaceRoots[workspaceID] {
+            return rootURL
+        }
+        return nil
+    }
+
+    private func standardDirectoryURL(_ url: URL) -> URL {
+        let standardized = url.standardizedFileURL.resolvingSymlinksInPath()
+        let isDirectory = try? standardized.resourceValues(forKeys: [.isDirectoryKey]).isDirectory
+        if isDirectory == false {
+            return standardized.deletingLastPathComponent()
+        }
+        return standardized
+    }
+
+    private func workspaceRelativePath(for projectURL: URL, workspaceID: String?) -> String? {
+        guard let workspaceID, let rootURL = workspaceRoots[workspaceID] else {
+            return nil
+        }
+
+        let rootPath = rootURL.path
+        let projectPath = projectURL.path
+        guard projectPath == rootPath || projectPath.hasPrefix(rootPath + "/") else {
+            return nil
+        }
+        guard projectPath != rootPath else {
+            return nil
+        }
+        return String(projectPath.dropFirst(rootPath.count + 1)).nilIfEmpty
+    }
+
+    private func projectName(for directoryURL: URL) -> String {
+        if let readmeURL = readmeURL(in: directoryURL),
+           let extractedName = extractProjectName(from: readmeURL)
+        {
+            return extractedName
+        }
+        return directoryURL.lastPathComponent.trimmedOrEmpty.nilIfEmpty
+            ?? directoryURL.path.trimmedOrEmpty.nilIfEmpty
+            ?? "未识别项目"
+    }
+
+    private func readmeURL(in directoryURL: URL) -> URL? {
+        guard fileManager.fileExists(atPath: directoryURL.path) else {
+            return nil
+        }
+
+        let candidates = (try? fileManager.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+
+        let ranked = candidates.compactMap { url -> (rank: Int, url: URL)? in
+            let isRegularFile = try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile
+            guard isRegularFile == true else { return nil }
+            let lowercaseName = url.lastPathComponent.lowercased()
+            guard lowercaseName == "readme"
+                || lowercaseName.hasPrefix("readme.")
+            else {
+                return nil
+            }
+            return (readmeRank(for: lowercaseName), url)
+        }
+        .sorted { lhs, rhs in
+            if lhs.rank != rhs.rank {
+                return lhs.rank < rhs.rank
+            }
+            return lhs.url.lastPathComponent.localizedStandardCompare(rhs.url.lastPathComponent) == .orderedAscending
+        }
+
+        return ranked.first?.url
+    }
+
+    private func readmeRank(for filename: String) -> Int {
+        switch filename {
+        case "readme.md":
+            return 0
+        case "readme.markdown":
+            return 1
+        case "readme":
+            return 2
+        case "readme.txt":
+            return 3
+        default:
+            return 10
+        }
+    }
+
+    private func extractProjectName(from readmeURL: URL) -> String? {
+        guard let data = try? Data(contentsOf: readmeURL) else {
+            return nil
+        }
+
+        let preview = data.prefix(12_288)
+        let text = String(decoding: preview, as: UTF8.self)
+        let rawLines = text.components(separatedBy: .newlines)
+
+        for rawLine in rawLines {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard line.hasPrefix("#") else { continue }
+            let heading = line.drop { $0 == "#" || $0 == " " || $0 == "\t" }
+            if let cleaned = cleanedProjectTitle(String(heading)) {
+                return cleaned
+            }
+        }
+
+        if rawLines.count >= 2 {
+            for index in 0..<(rawLines.count - 1) {
+                let titleLine = rawLines[index].trimmingCharacters(in: .whitespacesAndNewlines)
+                let underlineLine = rawLines[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !titleLine.isEmpty, isSetextHeadingUnderline(underlineLine) else { continue }
+                if let cleaned = cleanedProjectTitle(titleLine) {
+                    return cleaned
+                }
+            }
+        }
+
+        for rawLine in rawLines {
+            if let cleaned = cleanedProjectTitle(rawLine) {
+                return cleaned
+            }
+        }
+
+        return nil
+    }
+
+    private func isSetextHeadingUnderline(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 3 else { return false }
+        return trimmed.allSatisfy { $0 == "=" || $0 == "-" }
+    }
+
+    private func cleanedProjectTitle(_ rawLine: String) -> String? {
+        var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty else { return nil }
+        guard !line.hasPrefix("!["),
+              !line.hasPrefix("[!["),
+              !line.hasPrefix("<img"),
+              !line.hasPrefix("<!--"),
+              !line.hasPrefix("```"),
+              !line.hasPrefix("---")
+        else {
+            return nil
+        }
+
+        if line.hasPrefix("#") {
+            line.removeAll { $0 == "#" }
+            line = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if line.hasPrefix(">") {
+            line.removeFirst()
+            line = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        line = line.replacingOccurrences(of: "`", with: "")
+        line = line.replacingOccurrences(of: "\\[(.*?)\\]\\((.*?)\\)", with: "$1", options: .regularExpression)
+        line = line.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return line.nilIfEmpty
+    }
+}
+
+func orchardWithTimeout<T: Sendable>(
+    seconds: Double,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    let timeoutNanoseconds = UInt64(max(seconds, 0.1) * 1_000_000_000)
+    return try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask {
+            try await operation()
+        }
+        group.addTask {
+            try await Task.sleep(nanoseconds: timeoutNanoseconds)
+            throw NSError(domain: "OrchardTimeout", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "操作超时，请稍后再试。",
+            ])
+        }
+
+        guard let firstResult = try await group.next() else {
+            throw NSError(domain: "OrchardTimeout", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "操作未返回结果。",
+            ])
+        }
+        group.cancelAll()
+        return firstResult
+    }
 }
 
 private func compareManagedRuns(lhs: ManagedRunSummary, rhs: ManagedRunSummary) -> Bool {

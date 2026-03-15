@@ -5,15 +5,18 @@ actor CodexAppServerBridge {
     private let config: ResolvedAgentConfig
     private let sessionHydrationLimit: Int
     private let rolloutStateInspector: CodexSessionRolloutStateInspector
+    private let rolloutReader: CodexSessionRolloutReader
 
     init(
         config: ResolvedAgentConfig,
         sessionHydrationLimit: Int = 3,
-        rolloutStateInspector: CodexSessionRolloutStateInspector = CodexSessionRolloutStateInspector()
+        rolloutStateInspector: CodexSessionRolloutStateInspector = CodexSessionRolloutStateInspector(),
+        rolloutReader: CodexSessionRolloutReader = CodexSessionRolloutReader()
     ) {
         self.config = config
         self.sessionHydrationLimit = max(sessionHydrationLimit, 0)
         self.rolloutStateInspector = rolloutStateInspector
+        self.rolloutReader = rolloutReader
     }
 
     func handle(_ request: AgentCodexCommandRequest) async -> AgentCodexCommandResponse {
@@ -50,7 +53,7 @@ actor CodexAppServerBridge {
         }
     }
 
-    private func listSessions(limit: Int) async throws -> [CodexSessionSummary] {
+    func listSessions(limit: Int) async throws -> [CodexSessionSummary] {
         try await withConnection { connection in
             let listed: AppServerThreadListResponse = try await connection.request(
                 method: "thread/list",
@@ -94,13 +97,13 @@ actor CodexAppServerBridge {
         }
     }
 
-    private func readSession(sessionID: String) async throws -> CodexSessionDetail {
+    func readSession(sessionID: String) async throws -> CodexSessionDetail {
         try await withConnection { connection in
             try await readSession(sessionID: sessionID, connection: connection)
         }
     }
 
-    private func continueSession(sessionID: String, prompt: String) async throws -> CodexSessionDetail {
+    func continueSession(sessionID: String, prompt: String) async throws -> CodexSessionDetail {
         try await withConnection { connection in
             let resumed: AppServerThreadResumeResponse = try await connection.request(
                 method: "thread/resume",
@@ -142,22 +145,44 @@ actor CodexAppServerBridge {
         }
     }
 
-    private func interruptSession(sessionID: String) async throws -> CodexSessionDetail {
+    func interruptSession(sessionID: String) async throws -> CodexSessionDetail {
         try await withConnection { connection in
-            let detail = try await readSession(sessionID: sessionID, connection: connection)
-            guard detail.session.state == .running, let turnID = detail.session.lastTurnID else {
-                throw NSError(domain: "CodexAppServerBridge", code: 1, userInfo: [
-                    NSLocalizedDescriptionKey: "当前会话没有可中断的运行中轮次。",
-                ])
-            }
-
-            _ = try await connection.request(
+            let resumed: AppServerThreadResumeResponse = try await connection.request(
                 method: "thread/resume",
                 params: AppServerThreadResumeParams(
                     threadId: sessionID,
                     persistExtendedHistory: true
                 )
-            ) as AppServerThreadResumeResponse
+            )
+
+            let hydratedTurnIDFromResume: String? = {
+                if let liveTurnID = resumed.thread.turns.last(where: { $0.status == "inProgress" })?.id {
+                    return liveTurnID
+                }
+                if let lastTurnID = resumed.thread.turns.last?.id {
+                    return lastTurnID
+                }
+                return nil
+            }()
+            let hydratedTurnID: String?
+            if let hydratedTurnIDFromResume {
+                hydratedTurnID = hydratedTurnIDFromResume
+            } else {
+                let fullThread: AppServerThreadReadResponse = try await connection.request(
+                    method: "thread/read",
+                    params: AppServerThreadReadParams(threadId: sessionID, includeTurns: true)
+                )
+                hydratedTurnID = fullThread.thread.turns.last(where: { $0.status == "inProgress" })?.id
+                    ?? fullThread.thread.turns.last?.id
+            }
+
+            let isRunning = resumed.thread.status.type == "active"
+                || resumed.thread.turns.last?.status == "inProgress"
+            guard isRunning, let turnID = hydratedTurnID else {
+                throw NSError(domain: "CodexAppServerBridge", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "当前会话没有可中断的运行中轮次。",
+                ])
+            }
 
             _ = try await connection.request(
                 method: "turn/interrupt",
@@ -173,11 +198,24 @@ actor CodexAppServerBridge {
         sessionID: String,
         connection: CodexAppServerConnection
     ) async throws -> CodexSessionDetail {
+        let lightweightRead: AppServerThreadReadResponse = try await connection.request(
+            method: "thread/read",
+            params: AppServerThreadReadParams(threadId: sessionID, includeTurns: false)
+        )
+        let rollout = rolloutReader.readRecentActivity(for: lightweightRead.thread.path)
+
+        if let rollout, !rollout.items.isEmpty {
+            return mapDetail(lightweightRead.thread, rollout: rollout)
+        }
+        if !lightweightRead.thread.turns.isEmpty {
+            return mapDetail(lightweightRead.thread, rollout: rollout)
+        }
+
         let read: AppServerThreadReadResponse = try await connection.request(
             method: "thread/read",
             params: AppServerThreadReadParams(threadId: sessionID, includeTurns: true)
         )
-        return mapDetail(read.thread)
+        return mapDetail(read.thread, rollout: rolloutReader.readRecentActivity(for: read.thread.path))
     }
 
     private func withConnection<T>(
@@ -189,8 +227,12 @@ actor CodexAppServerBridge {
         return try await operation(connection)
     }
 
-    private func mapDetail(_ thread: AppServerThread) -> CodexSessionDetail {
-        let summary = mapSummary(thread)
+    private func mapDetail(
+        _ thread: AppServerThread,
+        rollout: CodexSessionRolloutReader.Snapshot? = nil
+    ) -> CodexSessionDetail {
+        let rollout = rollout ?? rolloutReader.readRecentActivity(for: thread.path)
+        let summary = mapSummary(thread, rollout: rollout)
         var turns: [CodexSessionTurn] = []
         turns.reserveCapacity(thread.turns.count)
 
@@ -211,11 +253,16 @@ actor CodexAppServerBridge {
             }
         }
 
-        return CodexSessionDetail(session: summary, turns: turns, items: items)
+        let mergedItems = mergedItems(threadItems: items, thread: thread, rollout: rollout)
+        return CodexSessionDetail(session: summary, turns: turns, items: mergedItems)
     }
 
-    private func mapSummary(_ thread: AppServerThread) -> CodexSessionSummary {
+    private func mapSummary(
+        _ thread: AppServerThread,
+        rollout: CodexSessionRolloutReader.Snapshot? = nil
+    ) -> CodexSessionSummary {
         let lastTurn = thread.turns.last
+        let threadUpdatedAt = Date(timeIntervalSince1970: TimeInterval(thread.updatedAt))
         var summary = CodexSessionSummary(
             id: thread.id,
             deviceID: config.deviceID,
@@ -227,22 +274,102 @@ actor CodexAppServerBridge {
             source: thread.source,
             modelProvider: thread.modelProvider,
             createdAt: Date(timeIntervalSince1970: TimeInterval(thread.createdAt)),
-            updatedAt: Date(timeIntervalSince1970: TimeInterval(thread.updatedAt)),
+            updatedAt: max(threadUpdatedAt, rollout?.latestActivityAt ?? threadUpdatedAt),
             state: mapState(thread),
-            lastTurnID: lastTurn?.id,
-            lastTurnStatus: lastTurn?.status,
-            lastUserMessage: SensitiveTextRedactor.redact(lastUserMessage(in: thread.turns)),
-            lastAssistantMessage: SensitiveTextRedactor.redact(lastAssistantMessage(in: thread.turns))
+            lastTurnID: lastTurn?.id ?? rollout?.latestTurnID,
+            lastTurnStatus: lastTurn?.status ?? rollout?.latestTurnStatus,
+            lastUserMessage: SensitiveTextRedactor.redact(lastUserMessage(in: thread.turns) ?? rollout?.latestUserMessage),
+            lastAssistantMessage: SensitiveTextRedactor.redact(lastAssistantMessage(in: thread.turns) ?? rollout?.latestAssistantMessage)
         )
 
         if
-            let inferredState = rolloutStateInspector.inferredState(for: thread.path),
+            let inferredState = rollout?.inferredState ?? rolloutStateInspector.inferredState(for: thread.path),
             shouldOverrideState(current: summary.state, with: inferredState)
         {
             summary.state = inferredState
         }
 
         return summary
+    }
+
+    private func mergedItems(
+        threadItems: [CodexSessionItem],
+        thread: AppServerThread,
+        rollout: CodexSessionRolloutReader.Snapshot?
+    ) -> [CodexSessionItem] {
+        guard let rollout, !rollout.items.isEmpty else {
+            return resequenced(threadItems)
+        }
+
+        if threadItems.isEmpty {
+            return resequenced(rollout.items)
+        }
+
+        guard rollout.containsExecutionItems else {
+            return resequenced(threadItems)
+        }
+
+        let latestTurnID = rollout.latestTurnID ?? thread.turns.last?.id ?? threadItems.last?.turnID ?? "rollout"
+        let olderThreadItems = threadItems.filter { $0.turnID != latestTurnID }
+        let latestThreadItems = threadItems.filter { $0.turnID == latestTurnID }
+        let mergedLatestTurnItems = mergeLatestTurnItems(
+            threadItems: latestThreadItems,
+            rolloutItems: rollout.items
+        )
+
+        return resequenced(olderThreadItems + mergedLatestTurnItems)
+    }
+
+    private func mergeLatestTurnItems(
+        threadItems: [CodexSessionItem],
+        rolloutItems: [CodexSessionItem]
+    ) -> [CodexSessionItem] {
+        guard !rolloutItems.isEmpty else {
+            return threadItems
+        }
+
+        let rolloutSignatures = Set(rolloutItems.map(itemSignature))
+        let leadingThreadItems = threadItems.filter { item in
+            item.kind == .userMessage && !rolloutSignatures.contains(itemSignature(item))
+        }
+        let trailingThreadItems = threadItems.filter { item in
+            item.kind != .userMessage && !rolloutSignatures.contains(itemSignature(item))
+        }
+
+        return deduplicated(leadingThreadItems + rolloutItems + trailingThreadItems)
+    }
+
+    private func deduplicated(_ items: [CodexSessionItem]) -> [CodexSessionItem] {
+        var seen: Set<String> = []
+        var result: [CodexSessionItem] = []
+        result.reserveCapacity(items.count)
+
+        for item in items {
+            let signature = itemSignature(item)
+            guard seen.insert(signature).inserted else {
+                continue
+            }
+            result.append(item)
+        }
+
+        return result
+    }
+
+    private func itemSignature(_ item: CodexSessionItem) -> String {
+        [
+            item.kind.rawValue,
+            item.title.trimmingCharacters(in: .whitespacesAndNewlines),
+            (item.body ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+            item.status ?? "",
+        ].joined(separator: "|")
+    }
+
+    private func resequenced(_ items: [CodexSessionItem]) -> [CodexSessionItem] {
+        items.enumerated().map { offset, item in
+            var item = item
+            item.sequence = offset
+            return item
+        }
     }
 
     private func shouldOverrideState(current: CodexSessionState, with inferredState: CodexSessionState) -> Bool {
@@ -353,7 +480,7 @@ actor CodexAppServerBridge {
                 sequence: sequence,
                 kind: .commandExecution,
                 title: item.command ?? "命令执行",
-                body: item.aggregatedOutput,
+                body: SensitiveTextRedactor.redact(item.aggregatedOutput),
                 status: item.status
             )
         case "fileChange":
@@ -373,7 +500,7 @@ actor CodexAppServerBridge {
                 sequence: sequence,
                 kind: .webSearch,
                 title: "网页检索",
-                body: item.query
+                body: SensitiveTextRedactor.redact(item.query)
             )
         default:
             return CodexSessionItem(
@@ -382,7 +509,7 @@ actor CodexAppServerBridge {
                 sequence: sequence,
                 kind: .other,
                 title: item.type,
-                body: item.text ?? item.command ?? item.query,
+                body: SensitiveTextRedactor.redact(item.text ?? item.command ?? item.query),
                 status: item.status
             )
         }

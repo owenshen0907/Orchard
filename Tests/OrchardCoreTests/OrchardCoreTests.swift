@@ -18,6 +18,17 @@ final class OrchardCoreTests: XCTestCase {
         XCTAssertEqual(decoded.kind, .codex)
     }
 
+    func testCodexPayloadRoundTripWithDriver() throws {
+        let payload = TaskPayload.codex(CodexTaskPayload(
+            prompt: "Refactor the API client",
+            driver: .claudeCode
+        ))
+        let data = try OrchardJSON.encoder.encode(payload)
+        let decoded = try OrchardJSON.decoder.decode(TaskPayload.self, from: data)
+        XCTAssertEqual(decoded, payload)
+        XCTAssertEqual(decoded.kind, .codex)
+    }
+
     func testWorkspacePathRejectsEscape() throws {
         XCTAssertThrowsError(try OrchardWorkspacePath.resolve(rootPath: "/tmp/workspace", relativePath: "../outside"))
     }
